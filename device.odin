@@ -1,6 +1,7 @@
 package main
 import "core:log"
 import vk "vendor:vulkan"
+import "third_party/vma"
 
 @(private="file")
 REQUIRED_DEVICE_EXTS_VK12 := []cstring {
@@ -10,6 +11,7 @@ REQUIRED_DEVICE_EXTS_VK12 := []cstring {
 
 Device :: struct {
 	properties: vk.PhysicalDeviceProperties,
+	allocator: vma.Allocator,
 	physical: vk.PhysicalDevice,
 	logical: vk.Device,
 	graphics_queue: vk.Queue,
@@ -19,11 +21,27 @@ Device :: struct {
 device_init :: proc(d: ^Device, i: Instance, s: Surface) {
 	pick_physical_device(d, i, s)
 	create_device_and_queues(d)
+	create_allocator(d, i)
 }
 
 device_destroy :: proc(d: ^Device) {
+	vma.DestroyAllocator(d.allocator)
 	vk.DestroyDevice(d.logical, nil)
 	d^ = {}
+}
+
+@(private="file")
+create_allocator :: proc(d: ^Device, i: Instance) {
+	vulkan_functions := vma.create_vulkan_functions()
+	create_info: vma.AllocatorCreateInfo = {
+		flags            = { .BUFFER_DEVICE_ADDRESS },
+		instance         = i.handle,
+		physicalDevice   = d.physical,
+		device           = d.logical,
+		pVulkanFunctions = &vulkan_functions,
+		vulkanApiVersion = d.properties.apiVersion,
+	}
+	vma.CreateAllocator(create_info, &d.allocator)
 }
 
 @(private="file")

@@ -12,9 +12,8 @@ Renderer :: struct {
 
 	command_pool: vk.CommandPool,
 	command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer,
-
-	fences: [MAX_FRAMES_IN_FLIGHT]vk.Fence,
 	image_available: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
+	fences: [MAX_FRAMES_IN_FLIGHT]vk.Fence,
 	current_frame: int,
 
 	pipeline_layout: vk.PipelineLayout,
