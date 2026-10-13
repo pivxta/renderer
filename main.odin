@@ -22,6 +22,7 @@ main :: proc() {
 	for !glfw.WindowShouldClose(window) {
 		glfw.PollEvents()
 		renderer_draw(&renderer)
+		free_all(context.temp_allocator)
 	}
 
 	renderer_destroy(&renderer)
