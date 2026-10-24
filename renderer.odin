@@ -1,6 +1,10 @@
 package main
 import "core:log"
-import "vendor:glfw"
+import _ "core:image/jpeg"
+import _ "core:image/png"
+import "core:image"
+import "core:slice"
+import "core:bytes"
 import vk "vendor:vulkan"
 
 MAX_FRAMES_IN_FLIGHT :: 2
@@ -11,6 +15,7 @@ Renderer :: struct {
 	surface: Surface,
 
 	command_pool: vk.CommandPool,
+	quick_command_buffer: vk.CommandBuffer,
 	command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer,
 	image_available: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
 	fences: [MAX_FRAMES_IN_FLIGHT]vk.Fence,
@@ -18,22 +23,93 @@ Renderer :: struct {
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline: vk.Pipeline,
+
+	depth_texture: Texture,
+
+	descriptor_pool: vk.DescriptorPool,
+	descriptor_set_layout: vk.DescriptorSetLayout,
+	descriptor_set: vk.DescriptorSet,
+
+	view_buffer: Buffer,
+	instance_buffer: Buffer,
+	vertex_buffer: Buffer,
+
+	texture: Texture,
+	sampler: vk.Sampler,
 }
 
-renderer_init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
-	instance_init(&r.instance)
-	surface_init(&r.surface, r.instance, window)
-	device_init(&r.device, r.instance, r.surface)
-	surface_configure(&r.surface, r.device)
-	create_command_buffers(r)
-	create_sync_primitives(r)
-	create_pipeline(r)
+Renderer_Draw_Error :: enum {
+	Texture_Acquisition_Failed,
+	Presentation_Failed,
+}
+
+Renderer_Error :: union #shared_nil {
+	Instance_Error,
+	Device_Error,
+	Surface_Error,
+	Renderer_Draw_Error,
+	Texture_Error,
+	Buffer_Error,
+	vk.Result,
+}
+
+Vertex :: struct {
+	position: [3]f32,
+	tex_coords: [2]f32,
+}
+
+Object_Instance :: struct {
+	object_to_world: matrix[3, 4]f32,
+}
+
+View :: struct {
+	world_to_clip: matrix[4, 4]f32,
+}
+
+Push_Constants :: struct {
+	view_address: vk.DeviceAddress,
+	instances_address: vk.DeviceAddress,
+	vertices_address: vk.DeviceAddress,
+}
+
+@(require_results)
+renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
+	assert(r != nil)
+
+	defer if err != nil {
+		renderer_destroy(r)	
+	}
+
+	instance_init(&r.instance) or_return
+	surface_init(&r.surface, r.instance, window) or_return
+	device_init(&r.device, r.instance, r.surface) or_return
+	surface_configure(&r.surface, r.device) or_return
+	create_command_buffers(r) or_return
+	create_sync_primitives(r) or_return
+	create_depth_texture(r) or_return
+	create_descriptor_sets(r) or_return
+	create_pipeline_layout(r) or_return
+	create_pipeline(r) or_return
+	create_buffers(r) or_return
+	load_textures(r) or_return
+
+	return nil
 }
 
 renderer_destroy :: proc (r: ^Renderer) {
-	must(vk.DeviceWaitIdle(r.device.logical))
+	if r == nil {
+		return
+	}
 
+	if r.device.logical != nil {
+		_ = vk.DeviceWaitIdle(r.device.logical)
+	}
+	destroy_textures(r)
+	destroy_buffers(r)
 	destroy_pipeline(r)
+	destroy_pipeline_layout(r)
+	destroy_descriptor_sets(r)
+	destroy_depth_texture(r)
 	destroy_sync_primitives(r)
 	destroy_command_pool(r)
 	surface_destroy(&r.surface, r.instance, r.device)
@@ -42,51 +118,106 @@ renderer_destroy :: proc (r: ^Renderer) {
 	r^ = {}
 }
 
-renderer_draw :: proc(r: ^Renderer) {
-	must(vk.WaitForFences(r.device.logical, 1, &r.fences[r.current_frame], true, max(u64)))
-
+@(require_results)
+renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
+	vk.WaitForFences(r.device.logical, 1, &r.fences[r.current_frame], true, max(u64)) or_return
 	surface_texture, acquire_result := surface_acquire_texture(
 		r.surface, 
 		r.device, 
 		r.image_available[r.current_frame],
 	)
+
+	needs_reconfigure := false
 	#partial switch acquire_result {
-	case .SUCCESS, .SUBOPTIMAL_KHR:
+	case .SUCCESS:
+	case .SUBOPTIMAL_KHR:
+		needs_reconfigure = true
 	case .ERROR_OUT_OF_DATE_KHR:
-		surface_configure(&r.surface, r.device)
-		return
+		reconfigure_targets(r) or_return
+		return nil
+	case .TIMEOUT, .NOT_READY:
+		return nil
 	case:
-		log.panicf("Failed to acquire next image: %v", acquire_result)
+		log.errorf("Failed to acquire next image: %v", acquire_result)
+		return Renderer_Draw_Error.Texture_Acquisition_Failed
 	}
 
-	must(vk.ResetFences(r.device.logical, 1, &r.fences[r.current_frame]))
+	write_data(r, scene) or_return
 
-	command_buffer := begin_command_buffer(r)
+	command_buffer := begin_command_buffer(r) or_return
 	record_commands(r, command_buffer, surface_texture)
-	submit_command_buffer(r, command_buffer, surface_texture)
+	submit_command_buffer(r, command_buffer, surface_texture) or_return
 
-	present_result := surface_present(r.surface, r.device, surface_texture)
-	#partial switch present_result {
+	#partial switch result := surface_present(r.surface, r.device, surface_texture); result {
 	case .SUCCESS:
-	case .ERROR_OUT_OF_DATE_KHR, .SUBOPTIMAL_KHR:
-		surface_configure(&r.surface, r.device)
+	case .SUBOPTIMAL_KHR, .ERROR_OUT_OF_DATE_KHR:
+		needs_reconfigure = true
 	case:	
-		log.panicf("Failed to present image: %v", present_result)
+		log.errorf("Failed to present image: %v", result)
+		return Renderer_Draw_Error.Presentation_Failed
 	}
 
 	r.current_frame = (r.current_frame + 1) % MAX_FRAMES_IN_FLIGHT
+
+	if needs_reconfigure || surface_should_resize(r.surface) {
+		reconfigure_targets(r) or_return
+	}
+	
+	return nil
+}
+
+@(require_results)
+reconfigure_targets :: proc(r: ^Renderer) -> Renderer_Error {
+	vk.DeviceWaitIdle(r.device.logical) or_return
+
+	old_format := r.surface.format
+	surface_configure(&r.surface, r.device) or_return
+	new_format := r.surface.format
+	if old_format != new_format {
+		create_pipeline(r) or_return
+	}
+
+	create_depth_texture(r) or_return
+	return nil
+}
+
+@(require_results)
+write_data :: proc(r: ^Renderer, scene: Scene) -> Buffer_Error {
+	width := int(r.surface.extent.width)
+	height := int(r.surface.extent.height)
+	view := View {
+		world_to_clip = get_world_to_clip_matrix(scene.camera, width, height),
+	}
+
+	mapped_views := slice.reinterpret([]View, r.view_buffer.mapped)
+	mapped_views[r.current_frame] = view
+	buffer_flush(&r.view_buffer, r.device) or_return
+
+	return nil
 }
 
 record_draw_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface_tex: Surface_Texture) {
-	attachment_info := vk.RenderingAttachmentInfo {
+	color_attachment_info := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = surface_tex.view,
+		imageView = surface_tex.texture.full_view.handle,
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		storeOp = .STORE,
 		loadOp = .CLEAR,
 		clearValue = {
 			color = {
 				float32 = {0.2, 0.7, 1.0, 1.0},
+			},
+		},
+	}
+	depth_attachment_info := vk.RenderingAttachmentInfo {
+		sType = .RENDERING_ATTACHMENT_INFO,
+		imageView = r.depth_texture.full_view.handle,
+		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+		storeOp = .STORE,
+		loadOp = .CLEAR,
+		clearValue = {
+			depthStencil = {
+				depth = 0.0,
 			},
 		},
 	}
@@ -98,7 +229,8 @@ record_draw_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface_tex: S
 		},
 		layerCount = 1,
 		colorAttachmentCount = 1,
-		pColorAttachments = &attachment_info,
+		pColorAttachments = &color_attachment_info,
+		pDepthAttachment = &depth_attachment_info,
 	}
 
 	vk.CmdBeginRendering(cmd, &render_info)
@@ -119,13 +251,24 @@ record_draw_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface_tex: S
 	}
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
+	constants := Push_Constants {
+		view_address = r.view_buffer.address + size_of(View) * vk.DeviceAddress(r.current_frame),
+		instances_address = r.instance_buffer.address,
+		vertices_address = r.vertex_buffer.address,
+	}
+	vk.CmdPushConstants(cmd, r.pipeline_layout, {.VERTEX}, 0, size_of(Push_Constants), &constants)
+
 	vk.CmdBindPipeline(cmd, .GRAPHICS, r.pipeline)
-	vk.CmdDraw(cmd, 3, 1, 0, 0)
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, r.pipeline_layout, 0, 1, &r.descriptor_set, 0, nil)
+	vk.CmdDraw(cmd, 
+	           u32(r.vertex_buffer.size) / size_of(Vertex),
+	           u32(r.instance_buffer.size) / size_of(Object_Instance), 
+	    	   0, 0)
 	
 	vk.CmdEndRendering(cmd)
 }
 
-record_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface_tex: Surface_Texture) {
+record_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface: Surface_Texture) {
 	subresource_range := vk.ImageSubresourceRange {
 		aspectMask = {.COLOR},
 		baseMipLevel = 0,
@@ -135,7 +278,23 @@ record_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface_tex: Surfac
 	}
 
 	record_image_barrier(r, cmd, {
-		image = surface_tex.image,
+		image = r.depth_texture.handle,
+		srcStageMask = {},
+		srcAccessMask = {},
+		dstStageMask = {.EARLY_FRAGMENT_TESTS},
+		dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_READ, .DEPTH_STENCIL_ATTACHMENT_WRITE}, 
+		oldLayout = .UNDEFINED, 
+		newLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+		subresourceRange = vk.ImageSubresourceRange {
+			aspectMask = {.DEPTH},
+			baseMipLevel = 0,
+			levelCount = 1,
+			baseArrayLayer = 0,
+			layerCount = 1,
+		},
+	})
+	record_image_barrier(r, cmd, {
+		image = surface.texture.handle,
 		srcStageMask = {},
 		srcAccessMask = {},
 		dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
@@ -144,9 +303,9 @@ record_commands :: proc(r: ^Renderer, cmd: vk.CommandBuffer, surface_tex: Surfac
 		newLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		subresourceRange = subresource_range,
 	})
-	record_draw_commands(r, cmd, surface_tex)
+	record_draw_commands(r, cmd, surface)
 	record_image_barrier(r, cmd, {
-		image = surface_tex.image,
+		image = surface.texture.handle,
 		srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
 		srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
 		dstStageMask = {},
@@ -168,22 +327,28 @@ record_image_barrier :: proc(r: ^Renderer, cmd: vk.CommandBuffer, barrier: vk.Im
 	vk.CmdPipelineBarrier2(cmd, &dependency_info)
 }
 
-begin_command_buffer :: proc(r: ^Renderer) -> vk.CommandBuffer {
-	command_buffer := r.command_buffers[r.current_frame]
-	must(vk.ResetCommandBuffer(command_buffer, {}))
-	must(vk.BeginCommandBuffer(command_buffer, &vk.CommandBufferBeginInfo {
+@(require_results)
+begin_command_buffer :: proc(r: ^Renderer) -> (
+	command_buffer: vk.CommandBuffer, 
+	result: vk.Result,
+) {
+	command_buffer = r.command_buffers[r.current_frame]
+	vk.ResetCommandBuffer(command_buffer, {}) or_return
+	vk.BeginCommandBuffer(command_buffer, &vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
-	}))
-	return command_buffer	
+	}) or_return
+	return
 }
 
+@(require_results)
 submit_command_buffer :: proc(
 	r: ^Renderer, 
 	command_buffer: vk.CommandBuffer, 
-	surface_tex: Surface_Texture,
-) {
-	must(vk.EndCommandBuffer(command_buffer))
+	surface: Surface_Texture,
+) -> vk.Result {
+	vk.EndCommandBuffer(command_buffer) or_return
+
 	cmd_buffer_info := vk.CommandBufferSubmitInfo {
 		sType = .COMMAND_BUFFER_SUBMIT_INFO, commandBuffer = command_buffer,
 	}
@@ -194,7 +359,7 @@ submit_command_buffer :: proc(
 	}
 	signal_info := vk.SemaphoreSubmitInfo {
 		sType = .SEMAPHORE_SUBMIT_INFO,
-		semaphore = surface_tex.presentable,
+		semaphore = surface.presentable,
 		stageMask = {.ALL_COMMANDS},
 	}
 	submit_info := vk.SubmitInfo2 {
@@ -206,18 +371,379 @@ submit_command_buffer :: proc(
 		commandBufferInfoCount = 1,
 		pCommandBufferInfos = &cmd_buffer_info,
 	}
-	must(vk.QueueSubmit2(r.device.graphics_queue, 1, &submit_info, r.fences[r.current_frame]))
+
+	vk.ResetFences(r.device.logical, 1, &r.fences[r.current_frame]) or_return
+	vk.QueueSubmit2(r.device.graphics_queue, 1, &submit_info, r.fences[r.current_frame]) or_return
+
+	return .SUCCESS
 }
 
-SHADER_SPIRV :: #load("shaders/compiled/default.spv")
-
-create_pipeline :: proc(r: ^Renderer) {
-	layout_info := vk.PipelineLayoutCreateInfo {
-		sType = .PIPELINE_LAYOUT_CREATE_INFO,
+@(require_results)
+load_textures :: proc(r: ^Renderer) -> Renderer_Error {
+	img, err := image.load_from_file("assets/rocksalbedo.jpg", {.alpha_add_if_missing})
+	if err != nil {
+		log.panic("failed to load image")
+	}
+	defer image.destroy(img)
+	if img.depth != 8 || img.channels != 4 {
+		log.panic("invalid image format")
 	}
 
-	must(vk.CreatePipelineLayout(r.device.logical, &layout_info, nil, &r.pipeline_layout))
+	pixels := bytes.buffer_to_bytes(&img.pixels)
 
+	staging_buffer: Buffer
+
+	buffer_init(
+		&staging_buffer, r.device,
+		size = slice.size(pixels), 
+		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
+		buffer_usage = {.TRANSFER_SRC},
+	) or_return
+	defer buffer_destroy(&staging_buffer, r.device)
+	copy(staging_buffer.mapped, pixels)
+	buffer_flush(&staging_buffer, r.device) or_return
+
+	texture_extent := vk.Extent3D {u32(img.width), u32(img.height), 1}
+	texture_init(
+		&r.texture, r.device,
+		type = .D2,
+		format = .R8G8B8A8_SRGB,
+		usage = {.TRANSFER_DST, .SAMPLED},
+		extent = texture_extent,
+	) or_return
+
+	sampler_info := vk.SamplerCreateInfo {
+		sType = .SAMPLER_CREATE_INFO,
+		magFilter = .NEAREST,
+		minFilter = .LINEAR,
+		mipmapMode = .LINEAR,
+		addressModeU = .REPEAT,
+		addressModeV = .REPEAT,
+		addressModeW = .REPEAT,
+		minLod = 0.0,
+		maxLod = 128.0,
+	}
+
+	vk.CreateSampler(r.device.logical, &sampler_info, nil, &r.sampler) or_return
+
+	subresource_range := view_subresource_range(r.texture.full_view)
+
+	begin_quick_command_buffer(r) or_return
+
+	record_image_barrier(r, r.quick_command_buffer, {
+		image = r.texture.handle,
+		srcStageMask = {},
+		srcAccessMask = {},
+		dstStageMask = {.TRANSFER},
+		dstAccessMask = {.TRANSFER_WRITE},
+		oldLayout = .UNDEFINED,
+		newLayout = .TRANSFER_DST_OPTIMAL,
+		subresourceRange = subresource_range,
+	})
+
+	image_copy := vk.BufferImageCopy {
+		imageOffset = {0, 0, 0},
+		imageExtent = r.texture.extent,
+		imageSubresource = {
+			aspectMask = r.texture.full_view.aspect_mask,
+			baseArrayLayer = 0,
+			layerCount = 1,
+			mipLevel = 0,
+		},
+	}
+	vk.CmdCopyBufferToImage(
+		r.quick_command_buffer, staging_buffer.handle, 
+		r.texture.handle, .TRANSFER_DST_OPTIMAL,
+		1, &image_copy,
+	)
+
+	record_image_barrier(r, r.quick_command_buffer, {
+		image = r.texture.handle,
+		srcStageMask = {.TRANSFER},
+		srcAccessMask = {.TRANSFER_WRITE},
+		dstStageMask = {.FRAGMENT_SHADER},
+		dstAccessMask = {.SHADER_SAMPLED_READ},
+		oldLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .SHADER_READ_ONLY_OPTIMAL,
+		subresourceRange = subresource_range,
+	})
+
+	submit_quick_command_buffer(r) or_return
+
+	desc_image_info := vk.DescriptorImageInfo {
+		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+		imageView = r.texture.full_view.handle,
+		sampler = r.sampler,
+	}
+	write_image := vk.WriteDescriptorSet {
+		sType = .WRITE_DESCRIPTOR_SET,
+		dstSet = r.descriptor_set,
+		dstBinding = 0,
+		dstArrayElement = 0,
+		descriptorCount = 1,
+		descriptorType = .COMBINED_IMAGE_SAMPLER,
+		pImageInfo = &desc_image_info,
+	}
+
+	vk.UpdateDescriptorSets(r.device.logical, 1, &write_image, 0, nil)
+
+	return nil
+}
+
+destroy_textures :: proc(r: ^Renderer) {
+	if r.sampler != 0 {
+		vk.DestroySampler(r.device.logical, r.sampler, nil)
+		r.sampler = 0
+	}
+	texture_destroy(&r.texture, r.device)
+}
+
+@(require_results)
+begin_quick_command_buffer :: proc(r: ^Renderer) -> vk.Result {
+	vk.ResetCommandBuffer(r.quick_command_buffer, {}) or_return
+	vk.BeginCommandBuffer(r.quick_command_buffer, &vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
+	}) or_return
+
+	return .SUCCESS
+}
+
+@(require_results)
+submit_quick_command_buffer :: proc(r: ^Renderer) -> vk.Result {
+	vk.EndCommandBuffer(r.quick_command_buffer) or_return
+
+	cmd_buffer_info := vk.CommandBufferSubmitInfo {
+		sType = .COMMAND_BUFFER_SUBMIT_INFO, 
+		commandBuffer = r.quick_command_buffer,
+	}
+	submit_info := vk.SubmitInfo2 {
+		sType = .SUBMIT_INFO_2,
+		commandBufferInfoCount = 1,
+		pCommandBufferInfos = &cmd_buffer_info,
+	}
+
+	fence: vk.Fence
+	fence_info := vk.FenceCreateInfo{
+		sType = .FENCE_CREATE_INFO,
+	}
+	vk.CreateFence(r.device.logical, &fence_info, nil, &fence) or_return
+	defer vk.DestroyFence(r.device.logical, fence, nil)
+	vk.QueueSubmit2(r.device.graphics_queue, 1, &submit_info, fence) or_return
+	vk.WaitForFences(r.device.logical, 1, &fence, true, max(u64)) or_return
+
+	return .SUCCESS
+}
+
+@(require_results)
+create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
+	vertices := []Vertex {
+		// -Z
+		{{-0.5, -0.5, -0.5}, {0.0, 1.0}},
+		{{0.5, -0.5, -0.5}, {1.0, 1.0}},
+		{{0.5, 0.5, -0.5}, {1.0, 0.0}},
+		{{-0.5, -0.5, -0.5}, {0.0, 1.0}},
+		{{0.5, 0.5, -0.5}, {1.0, 0.0}},
+		{{-0.5, 0.5, -0.5}, {0.0, 0.0}},
+		// +Z
+		{{0.5, -0.5, 0.5}, {0.0, 1.0}},
+		{{-0.5, -0.5, 0.5}, {1.0, 1.0}},
+		{{-0.5, 0.5, 0.5}, {1.0, 0.0}},
+		{{0.5, -0.5, 0.5}, {0.0, 1.0}},
+		{{-0.5, 0.5, 0.5}, {1.0, 0.0}},
+		{{0.5, 0.5, 0.5}, {0.0, 0.0}},
+		// +X
+		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
+		{{0.5, -0.5, 0.5}, {1.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
+		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
+		{{0.5, 0.5, -0.5}, {0.0, 0.0}},
+		// -X
+		{{-0.5, -0.5, 0.5}, {0.0, 1.0}},
+		{{-0.5, -0.5, -0.5}, {1.0, 1.0}},
+		{{-0.5, 0.5, -0.5}, {1.0, 0.0}},
+		{{-0.5, -0.5, 0.5}, {0.0, 1.0}},
+		{{-0.5, 0.5, -0.5}, {1.0, 0.0}},
+		{{-0.5, 0.5, 0.5}, {0.0, 0.0}},
+		// +Y
+		{{-0.5, 0.5, -0.5}, {0.0, 1.0}},
+		{{0.5, 0.5, -0.5}, {1.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
+		{{-0.5, 0.5, -0.5}, {0.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
+		{{-0.5, 0.5, 0.5}, {0.0, 0.0}},
+		// -Y
+		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
+		{{-0.5, -0.5, -0.5}, {1.0, 1.0}},
+		{{-0.5, -0.5, 0.5}, {1.0, 0.0}},
+		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
+		{{-0.5, -0.5, 0.5}, {1.0, 0.0}},
+		{{0.5, -0.5, 0.5}, {0.0, 0.0}},
+	}
+
+	instances := make([dynamic]Object_Instance, 0, 0, context.temp_allocator)
+
+	rows := 10
+	columns := 10
+	spacing := f32(3.0)
+	for a in 0..<rows {
+		for b in 0..<columns {
+			transform := affine_make({
+				(f32(a) - f32(rows) * 0.5 + 0.5) * spacing, -1.0, 
+				(f32(b) - f32(columns) * 0.5 + 0.5) * spacing,
+			})
+			append(&instances, Object_Instance {
+				object_to_world = affine_to_matrix3x4(transform),
+			})
+		}
+	}
+
+	buffer_init(
+		&r.view_buffer, r.device,
+		size = MAX_FRAMES_IN_FLIGHT * size_of(View),
+		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
+	) or_return
+
+	buffer_init(
+		&r.vertex_buffer, r.device, 
+		size = slice.size(vertices),
+		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
+	) or_return
+
+	buffer_init(
+		&r.instance_buffer, r.device, 
+		size = slice.size(instances[:]),
+		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
+	) or_return
+
+	mapped_vertices := slice.reinterpret([]Vertex, r.vertex_buffer.mapped)
+	copy(mapped_vertices, vertices)
+	buffer_flush(&r.vertex_buffer, r.device) or_return
+
+	mapped_instances := slice.reinterpret([]Object_Instance, r.instance_buffer.mapped)
+	copy(mapped_instances, instances[:])
+	buffer_flush(&r.instance_buffer, r.device) or_return
+
+	return nil
+}
+
+destroy_buffers :: proc(r: ^Renderer) {
+	buffer_destroy(&r.instance_buffer, r.device)
+	buffer_destroy(&r.vertex_buffer, r.device)
+	buffer_destroy(&r.view_buffer, r.device)
+}
+
+@(require_results)
+create_depth_texture :: proc(r: ^Renderer) -> Texture_Error {
+	texture_destroy(&r.depth_texture, r.device)
+
+	depth_extent := vk.Extent3D {
+		r.surface.extent.width,
+		r.surface.extent.height, 1,
+	}
+
+	texture_init(
+		&r.depth_texture, r.device,
+		type = .D2,
+		format = .D32_SFLOAT,
+		usage = {.DEPTH_STENCIL_ATTACHMENT},
+		extent = depth_extent,
+	) or_return
+
+	return nil
+}
+
+destroy_depth_texture :: proc(r: ^Renderer) {
+	texture_destroy(&r.depth_texture, r.device)
+}
+
+@(require_results)
+create_descriptor_sets :: proc(r: ^Renderer) -> vk.Result {
+	pool_sizes := []vk.DescriptorPoolSize {
+		{
+			type = .COMBINED_IMAGE_SAMPLER,
+			descriptorCount = 1,
+		},
+	}
+	pool_info := vk.DescriptorPoolCreateInfo {
+		sType = .DESCRIPTOR_POOL_CREATE_INFO,
+		maxSets = 1,
+		poolSizeCount = u32(len(pool_sizes)),
+		pPoolSizes = raw_data(pool_sizes),
+	}
+
+	vk.CreateDescriptorPool(r.device.logical, &pool_info, nil, &r.descriptor_pool) or_return
+
+	bindings := []vk.DescriptorSetLayoutBinding {
+		{
+			binding = 0,
+			descriptorType = .COMBINED_IMAGE_SAMPLER,
+			descriptorCount = 1,
+			stageFlags = {.FRAGMENT},
+		},
+	}
+	layout_info := vk.DescriptorSetLayoutCreateInfo {
+		sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		bindingCount = u32(len(bindings)),
+		pBindings = raw_data(bindings),
+	}
+
+	vk.CreateDescriptorSetLayout(
+		r.device.logical, &layout_info, nil, 
+		&r.descriptor_set_layout,
+	) or_return
+
+	set_alloc_info := vk.DescriptorSetAllocateInfo {
+		sType = .DESCRIPTOR_SET_ALLOCATE_INFO,
+		descriptorPool = r.descriptor_pool,
+		descriptorSetCount = 1,
+		pSetLayouts = &r.descriptor_set_layout,
+	}
+
+	vk.AllocateDescriptorSets(
+		r.device.logical, &set_alloc_info,
+		&r.descriptor_set,
+	) or_return
+
+	return .SUCCESS
+}
+
+destroy_descriptor_sets :: proc(r: ^Renderer) {
+	if r.descriptor_set_layout != 0 {
+		vk.DestroyDescriptorSetLayout(r.device.logical, r.descriptor_set_layout, nil)
+		r.descriptor_set_layout = 0
+	}
+	if r.descriptor_pool != 0 {
+		vk.DestroyDescriptorPool(r.device.logical, r.descriptor_pool, nil)
+		r.descriptor_pool = 0
+	}
+}
+
+@(require_results)
+create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
+	push_constant_range := vk.PushConstantRange {
+		stageFlags = {.VERTEX},
+		offset = 0,
+		size = u32(size_of(Push_Constants)),
+	}
+	layout_info := vk.PipelineLayoutCreateInfo {
+		sType = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount = 1,
+		pSetLayouts = &r.descriptor_set_layout,
+		pushConstantRangeCount = 1,
+		pPushConstantRanges = &push_constant_range,
+	}
+
+	return vk.CreatePipelineLayout(r.device.logical, &layout_info, nil, &r.pipeline_layout)
+}
+
+@(require_results)
+create_pipeline :: proc(r: ^Renderer) -> vk.Result {
+	SHADER_SPIRV :: #load("shaders/compiled/default.spv")
 	shader_module: vk.ShaderModule
 	shader_module_info := vk.ShaderModuleCreateInfo {
 		sType = .SHADER_MODULE_CREATE_INFO,
@@ -225,7 +751,15 @@ create_pipeline :: proc(r: ^Renderer) {
 		pCode = cast([^]u32)raw_data(SHADER_SPIRV),
 	}
 
-	must(vk.CreateShaderModule(r.device.logical, &shader_module_info, nil, &shader_module))
+	vk.CreateShaderModule(
+		r.device.logical, 
+		&shader_module_info, nil, 
+		&shader_module,
+	) or_return
+
+	defer if shader_module != 0 {
+		vk.DestroyShaderModule(r.device.logical, shader_module, nil)
+	}
 
 	shader_stages := []vk.PipelineShaderStageCreateInfo {
 		{
@@ -257,6 +791,13 @@ create_pipeline :: proc(r: ^Renderer) {
 		polygonMode = .FILL,
 		cullMode = {.BACK},
 		frontFace = .COUNTER_CLOCKWISE,
+	}
+
+	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
+		sType = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		depthTestEnable = true,
+		depthWriteEnable = true,
+		depthCompareOp = .GREATER_OR_EQUAL,
 	}
 
 	viewport_state := vk.PipelineViewportStateCreateInfo {
@@ -294,6 +835,7 @@ create_pipeline :: proc(r: ^Renderer) {
 		sType = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount = 1,
 		pColorAttachmentFormats = &color_attachment_format,
+		depthAttachmentFormat = r.depth_texture.format,
 	}
 
 	pipeline_info := vk.GraphicsPipelineCreateInfo {
@@ -305,29 +847,44 @@ create_pipeline :: proc(r: ^Renderer) {
 		pVertexInputState = &vertex_state,
 		pInputAssemblyState = &input_assembly_state,
 		pRasterizationState = &raster_state,
+		pDepthStencilState = &depth_stencil_state,
 		pViewportState = &viewport_state,
 		pMultisampleState = &ms_state,
 		pColorBlendState = &blend_state,
 		pDynamicState = &dynamic_state,
 	}
 
-	must(vk.CreateGraphicsPipelines(r.device.logical, 0, 1, &pipeline_info, nil, &r.pipeline))
-	vk.DestroyShaderModule(r.device.logical, shader_module, nil)
+	pipeline: vk.Pipeline
+	vk.CreateGraphicsPipelines(r.device.logical, 0, 1, &pipeline_info, nil, &pipeline) or_return
+
+	destroy_pipeline(r)
+	r.pipeline = pipeline
+	return nil
+}
+
+destroy_pipeline_layout :: proc(r: ^Renderer) {
+	if r.pipeline_layout != 0 {
+		vk.DestroyPipelineLayout(r.device.logical, r.pipeline_layout, nil)
+		r.pipeline_layout = 0
+	}
 }
 
 destroy_pipeline :: proc(r: ^Renderer) {
-	vk.DestroyPipelineLayout(r.device.logical, r.pipeline_layout, nil)
-	vk.DestroyPipeline(r.device.logical, r.pipeline, nil)
+	if r.pipeline != 0 {
+		vk.DestroyPipeline(r.device.logical, r.pipeline, nil)
+		r.pipeline = 0
+	}
 }
 
-create_command_buffers :: proc(r: ^Renderer) {
+@(require_results)
+create_command_buffers :: proc(r: ^Renderer) -> vk.Result {
 	pool_info := vk.CommandPoolCreateInfo {
 		sType = .COMMAND_POOL_CREATE_INFO,
 		flags = {.RESET_COMMAND_BUFFER},
 		queueFamilyIndex = r.device.graphics_queue_family,
 	}
 
-	must(vk.CreateCommandPool(r.device.logical, &pool_info, nil, &r.command_pool))
+	vk.CreateCommandPool(r.device.logical, &pool_info, nil, &r.command_pool) or_return
 
 	alloc_info := vk.CommandBufferAllocateInfo {
 		sType = .COMMAND_BUFFER_ALLOCATE_INFO,
@@ -336,18 +893,30 @@ create_command_buffers :: proc(r: ^Renderer) {
 		commandPool = r.command_pool,
 	}
 
-	must(vk.AllocateCommandBuffers(
+	vk.AllocateCommandBuffers(
 		r.device.logical, 
 		&alloc_info, 
 		raw_data(r.command_buffers[:]),
-	))
+	) or_return
+
+	vk.AllocateCommandBuffers(
+		r.device.logical, 
+		&alloc_info, 
+		&r.quick_command_buffer,
+	) or_return
+
+	return .SUCCESS
 }
 
 destroy_command_pool :: proc(r: ^Renderer) {
-	vk.DestroyCommandPool(r.device.logical, r.command_pool, nil)
+	if r.command_pool != 0 {
+		vk.DestroyCommandPool(r.device.logical, r.command_pool, nil)
+		r.command_pool = 0
+	}
 }
 
-create_sync_primitives :: proc(r: ^Renderer) {
+@(require_results)
+create_sync_primitives :: proc(r: ^Renderer) -> vk.Result {
 	semaphore_info := vk.SemaphoreCreateInfo {
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
@@ -356,15 +925,23 @@ create_sync_primitives :: proc(r: ^Renderer) {
 		flags = {.SIGNALED},
 	}
 	for i in 0..<MAX_FRAMES_IN_FLIGHT {
-		must(vk.CreateSemaphore(r.device.logical, &semaphore_info, nil, &r.image_available[i]))
-		must(vk.CreateFence(r.device.logical, &fence_info, nil, &r.fences[i]))
+		vk.CreateSemaphore(r.device.logical, &semaphore_info, nil, &r.image_available[i]) or_return
+		vk.CreateFence(r.device.logical, &fence_info, nil, &r.fences[i]) or_return
 	}
+
+	return .SUCCESS
 }
 
 destroy_sync_primitives :: proc(r: ^Renderer) {
 	for i in 0..<MAX_FRAMES_IN_FLIGHT {
-		vk.DestroySemaphore(r.device.logical, r.image_available[i], nil)	
-		vk.DestroyFence(r.device.logical, r.fences[i], nil)	
+		if r.image_available[i] != 0 {
+			vk.DestroySemaphore(r.device.logical, r.image_available[i], nil)	
+			r.image_available[i] = 0
+		}
+		if r.fences[i] != 0 {
+			vk.DestroyFence(r.device.logical, r.fences[i], nil)	
+			r.fences[i] = 0
+		}
 	}
 }
 

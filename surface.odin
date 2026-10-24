@@ -1,27 +1,32 @@
 package main
-import "core:log"
-import "vendor:glfw"
 import vk "vendor:vulkan"
 
 Surface :: struct {
-	window: glfw.WindowHandle,
+	window: ^Window,
 	surface: vk.SurfaceKHR,
 	swapchain: vk.SwapchainKHR,
-	images: []vk.Image,
-	views: []vk.ImageView,
+	textures: []Texture,
 	extent: vk.Extent2D,
 	format: vk.Format,
 	colorspace: vk.ColorSpaceKHR,
-	image_presentable: [dynamic]vk.Semaphore,
+	presentable_semaphores: []vk.Semaphore,
 }
 
 Surface_Texture :: struct {
 	index: u32,
-	image: vk.Image,
-	view: vk.ImageView,
+	texture: ^Texture,
 	presentable: vk.Semaphore,
-	extent: vk.Extent2D,
-	format: vk.Format,
+}
+
+Surface_Configure_Error :: enum {
+	No_Surface_Formats,
+	No_Present_Modes,
+}
+
+Surface_Error :: union #shared_nil {
+	Surface_Configure_Error,
+	Texture_Error,
+	vk.Result,
 }
 
 @(private="file")
@@ -31,19 +36,36 @@ Surface_Capabilities :: struct {
 	present_modes: []vk.PresentModeKHR,
 }
 
-surface_init :: proc(s: ^Surface, i: Instance, window: glfw.WindowHandle) {
+@(require_results)
+surface_init :: proc(s: ^Surface, instance: Instance, window: ^Window) -> Surface_Error {
+	assert(s != nil)
 	s.window = window
-
-	must(glfw.CreateWindowSurface(i.handle, s.window, nil, &s.surface))
+	s.surface = window_create_surface(window, instance) or_return
+	return nil
 }
 
-surface_destroy :: proc(s: ^Surface, i: Instance, d: Device) {
-	destroy_swapchain(s, d)
-	vk.DestroySurfaceKHR(i.handle, s.surface, nil)
+surface_destroy :: proc(s: ^Surface, instance: Instance, device: Device) {
+	if s == nil {
+		return
+	}
+
+	destroy_swapchain_semaphores(&s.presentable_semaphores, device)
+	destroy_swapchain_textures(&s.textures, device)
+	destroy_swapchain(&s.swapchain, device)
+	if s.surface != 0 {
+		vk.DestroySurfaceKHR(instance.handle, s.surface, nil)
+	}
+
 	s^ = {}
 }
 
-surface_present :: proc(s: Surface, d: Device, texture: Surface_Texture) -> vk.Result {
+@(require_results)
+surface_should_resize :: proc(s: Surface) -> bool {
+	return s.window.resized
+}
+
+@(require_results)
+surface_present :: proc(s: Surface, device: Device, texture: Surface_Texture) -> vk.Result {
 	swapchain := s.swapchain
 	semaphore := texture.presentable
 	index := texture.index
@@ -55,18 +77,19 @@ surface_present :: proc(s: Surface, d: Device, texture: Surface_Texture) -> vk.R
 		waitSemaphoreCount = 1,
 		pImageIndices = &index,
 	}
-	return vk.QueuePresentKHR(d.graphics_queue, &present_info)
+ 	return vk.QueuePresentKHR(device.graphics_queue, &present_info)
 }
 
-surface_acquire_texture :: proc(s: Surface, d: Device, image_available: vk.Semaphore) -> (
-	texture: Surface_Texture,
-	result: vk.Result,
-) {
-	image_index: u32
+@(require_results)
+surface_acquire_texture :: proc(
+	s: Surface, 
+	device: Device, 
+	available: vk.Semaphore,
+) -> (texture: Surface_Texture, result: vk.Result) {
+	index: u32
 	result = vk.AcquireNextImageKHR(
-		d.logical, s.swapchain, max(u64),
-		image_available, 0,
-		&image_index,
+		device.logical, s.swapchain, max(u64),
+		available, 0, &index,
 	)
 
 	if result != .SUCCESS && result != .SUBOPTIMAL_KHR {
@@ -74,23 +97,29 @@ surface_acquire_texture :: proc(s: Surface, d: Device, image_available: vk.Semap
 	}
 
 	texture = {
-		index = image_index,
-		image = s.images[image_index],
-		view = s.views[image_index],
-		presentable = s.image_presentable[image_index],
-		extent = s.extent,
-		format = s.format,
+		index = index,
+		texture = &s.textures[index],
+		presentable = s.presentable_semaphores[index],
 	}
+
 	return
 }
 
-surface_configure :: proc(s: ^Surface, d: Device) {
-	caps, result := query_surface_capabilities(s^, d, context.temp_allocator)
-	if result != .SUCCESS {
-		log.panic("Failed to query surface capabilities")
+@(require_results)
+surface_configure :: proc(s: ^Surface, device: Device) -> (err: Surface_Error) {
+	caps := query_surface_capabilities(s^, device, context.temp_allocator) or_return
+	if len(caps.formats) == 0 {
+		return Surface_Configure_Error.No_Surface_Formats
+	}
+	if len(caps.present_modes) == 0 {
+		return Surface_Configure_Error.No_Present_Modes
 	}
 
-	extent := pick_extent(caps.caps, s.window)
+	extent, ok := pick_extent(caps.caps, s.window)
+	if !ok {
+		return nil
+	}
+
 	format := pick_format(caps.formats)
 	present_mode := pick_present_mode(caps.present_modes)
 	min_image_count := pick_min_image_count(caps.caps)
@@ -112,90 +141,109 @@ surface_configure :: proc(s: ^Surface, d: Device) {
 	}
 
 	swapchain: vk.SwapchainKHR 
-	must(vk.DeviceWaitIdle(d.logical))
-	must(vk.CreateSwapchainKHR(d.logical, &swapchain_info, nil, &swapchain))
-
-	destroy_swapchain_textures(s, d)
-	if s.swapchain != 0 {
-		vk.DestroySwapchainKHR(d.logical, s.swapchain, nil)
+	vk.CreateSwapchainKHR(device.logical, &swapchain_info, nil, &swapchain) or_return
+	defer if err != nil {
+		destroy_swapchain(&s.swapchain, device)
 	}
+
+	textures := create_swapchain_textures(device, swapchain, format.format, extent) or_return
+	defer if err != nil {
+		destroy_swapchain_textures(&textures, device)
+	}
+
+	semaphores := create_swapchain_semaphores(device, len(textures)) or_return
+	defer if err != nil {
+		destroy_swapchain_semaphores(&semaphores, device)
+	}
+
+	destroy_swapchain(&s.swapchain, device)
+	destroy_swapchain_textures(&s.textures, device)
+	destroy_swapchain_semaphores(&s.presentable_semaphores, device)
 
 	s.swapchain = swapchain
 	s.extent = extent
 	s.format = format.format
 	s.colorspace = format.colorSpace
+	s.textures = textures
+	s.presentable_semaphores = semaphores
+	return nil
+}
 
+@(private="file")
+destroy_swapchain :: proc(swapchain: ^vk.SwapchainKHR, device: Device) {
+	if swapchain^ != 0 {
+		vk.DestroySwapchainKHR(device.logical, swapchain^, nil)
+		swapchain^ = 0
+	}
+}
+
+@(private="file")
+create_swapchain_textures :: proc(
+	device: Device, 
+	swapchain: vk.SwapchainKHR,
+	format: vk.Format,
+	extent: vk.Extent2D,
+) -> (textures: []Texture, err: Texture_Error) {
 	image_count: u32
-	must(vk.GetSwapchainImagesKHR(d.logical, s.swapchain, &image_count, nil))
-	s.images = make([]vk.Image, image_count)
-	must(vk.GetSwapchainImagesKHR(d.logical, s.swapchain, &image_count, raw_data(s.images)))
+	vk.GetSwapchainImagesKHR(device.logical, swapchain, &image_count, nil) or_return
+	images := make([]vk.Image, image_count, context.temp_allocator)
+	vk.GetSwapchainImagesKHR(device.logical, swapchain, &image_count, raw_data(images)) or_return
 
-	s.views = make([]vk.ImageView, image_count)
-	for image, i in s.images {
-		view_ci := vk.ImageViewCreateInfo {
-			sType = .IMAGE_VIEW_CREATE_INFO,
+	textures = make([]Texture, image_count)
+	defer if err != nil {
+		destroy_swapchain_textures(&textures, device)
+	}
+	
+	for image, n in images {
+		texture_wrap(
+			&textures[n], device,
 			image = image,
-			viewType = .D2,
-			format = s.format,
-			subresourceRange = {
-				aspectMask = {.COLOR},
-				levelCount = 1,
-				layerCount = 1,
-			},
-		}
-		must(vk.CreateImageView(d.logical, &view_ci, nil, &s.views[i]))
+			type = .D2,
+			format = format,
+			extent = {extent.width, extent.height, 1},
+			usage = {.COLOR_ATTACHMENT},
+		) or_return
 	}
 
-	recreate_swapchain_semaphores(s, d)
+	return
 }
 
-destroy_swapchain :: proc(s: ^Surface, d: Device) {
-	destroy_swapchain_semaphores(s, d)
-	destroy_swapchain_textures(s, d)
-	if s.swapchain != 0 {
-		vk.DestroySwapchainKHR(d.logical, s.swapchain, nil)
+@(private="file")
+destroy_swapchain_textures :: proc(textures: ^[]Texture, device: Device) {
+	for &texture in textures {
+		texture_destroy(&texture, device)
+	}
+	if textures != nil {
+		delete(textures^)
+		textures^ = nil
 	}
 }
 
 @(private="file")
-destroy_swapchain_semaphores :: proc(s: ^Surface, d: Device) {
-	for semaphore in s.image_presentable {
-		if semaphore != 0 {
-			vk.DestroySemaphore(d.logical, semaphore, nil)
-		}
-	}
-	delete(s.image_presentable)
-}
-
-@(private="file")
-recreate_swapchain_semaphores :: proc(s: ^Surface, d: Device) {
-	for semaphore in s.image_presentable {
-		if semaphore != 0 {
-			vk.DestroySemaphore(d.logical, semaphore, nil)
-		}
-	}
-
-	resize(&s.image_presentable, len(s.images))
+create_swapchain_semaphores :: proc(device: Device, count: int) -> ([]vk.Semaphore, vk.Result) {
+	semaphores := make([]vk.Semaphore, count)
 
 	semaphore_info := vk.SemaphoreCreateInfo { sType = .SEMAPHORE_CREATE_INFO }
-	for &semaphore in s.image_presentable {
-		must(vk.CreateSemaphore(d.logical, &semaphore_info, nil, &semaphore))
+	for &semaphore in semaphores {
+		if result := vk.CreateSemaphore(device.logical, &semaphore_info, nil, &semaphore);
+		   result != .SUCCESS {
+			destroy_swapchain_semaphores(&semaphores, device)
+			return nil, result
+		}
 	}
+
+	return semaphores, .SUCCESS
 }
 
 @(private="file")
-destroy_swapchain_textures :: proc(s: ^Surface, d: Device) {
-	for view in s.views {
-		vk.DestroyImageView(d.logical, view, nil)
+destroy_swapchain_semaphores :: proc(semaphores: ^[]vk.Semaphore, d: Device) {
+	for semaphore in semaphores {
+		if semaphore != 0 {
+			vk.DestroySemaphore(d.logical, semaphore, nil)
+		}
 	}
-	if s.images != nil {
-		delete(s.images)
-		s.images = nil
-	}
-	if s.views != nil {
-		delete(s.views)
-		s.views = nil
-	}
+	delete(semaphores^)
+	semaphores^ = nil
 }
 
 @(private="file")
@@ -221,16 +269,20 @@ pick_present_mode :: proc(modes: []vk.PresentModeKHR) -> vk.PresentModeKHR {
 }
 
 @(private="file")
-pick_extent :: proc(caps: vk.SurfaceCapabilitiesKHR, window: glfw.WindowHandle) -> vk.Extent2D {
+pick_extent :: proc(caps: vk.SurfaceCapabilitiesKHR, window: ^Window) -> (vk.Extent2D, bool) {
 	if caps.currentExtent.width != max(u32) {
-		return caps.currentExtent
+		return caps.currentExtent, true
 	}
 
-	width, height := glfw.GetFramebufferSize(window)
-	return vk.Extent2D {
+	width, height := window_get_framebuffer_size(window)
+	if width <= 0 || height <= 0 {
+		return {}, false
+	}
+
+	return {
 		width = clamp(u32(width), caps.minImageExtent.width, caps.maxImageExtent.width),
 		height = clamp(u32(height), caps.minImageExtent.height, caps.maxImageExtent.height),
-	}
+	}, true
 }
 
 @(private="file")
@@ -244,8 +296,8 @@ pick_min_image_count :: proc(caps: vk.SurfaceCapabilitiesKHR) -> u32 {
 
 @(private="file")
 query_surface_capabilities :: proc(
-	s: Surface, 
-	d: Device, 
+	surface: Surface, 
+	device: Device, 
 	allocator := context.allocator,
 ) -> (
 	caps: Surface_Capabilities,
@@ -253,36 +305,40 @@ query_surface_capabilities :: proc(
 ) {
 	context.allocator = allocator
 
-	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(d.physical, s.surface, &caps.caps) or_return
+	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+		device.physical, 
+		surface.surface, 
+		&caps.caps,
+	) or_return
 	
 	present_mode_count: u32
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(
-		d.physical, 
-		s.surface, 
+		device.physical, 
+		surface.surface, 
 		&present_mode_count, 
 		nil,
 	) or_return
 
 	caps.present_modes = make([]vk.PresentModeKHR, present_mode_count)
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(
-		d.physical, 
-		s.surface, 
+		device.physical, 
+		surface.surface, 
 		&present_mode_count, 
 		raw_data(caps.present_modes),
 	) or_return
 
 	format_count: u32
 	vk.GetPhysicalDeviceSurfaceFormatsKHR(
-		d.physical, 
-		s.surface, 
+		device.physical, 
+		surface.surface, 
 		&format_count, 
 		nil,
 	) or_return
 
 	caps.formats = make([]vk.SurfaceFormatKHR, format_count)
 	vk.GetPhysicalDeviceSurfaceFormatsKHR(
-		d.physical, 
-		s.surface, 
+		device.physical, 
+		surface.surface, 
 		&format_count, 
 		raw_data(caps.formats),
 	) or_return

@@ -103,6 +103,7 @@ compile_shaders :: proc() {
 			"-profile", "spirv_1_4",
 			"-emit-spirv-directly",
 			"-fvk-use-entrypoint-name",
+			"-matrix-layout-column-major",
 			"-o", dst,
 		})
 	}

@@ -10,7 +10,23 @@ Instance :: struct {
 	messenger_context: ^runtime.Context,
 }
 
-instance_init :: proc (i: ^Instance) {
+Instance_Init_Error :: enum {
+	Required_Extension_Not_Available,
+}
+
+Instance_Error :: union #shared_nil {
+	Instance_Init_Error,
+	vk.Result,
+}
+
+@(require_results)
+instance_init :: proc (i: ^Instance) -> (err: Instance_Error) {
+	assert(i != nil)
+
+	defer if err != nil {
+		instance_destroy(i)
+	}
+
 	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
 
 	app_info := vk.ApplicationInfo {
@@ -28,13 +44,16 @@ instance_init :: proc (i: ^Instance) {
 	instance_exts := make([dynamic]cstring, 0, allocator=context.temp_allocator)
 
 	instance_ext_prop_count: u32 
-	vk.EnumerateInstanceExtensionProperties(nil, &instance_ext_prop_count, nil)
+	vk.EnumerateInstanceExtensionProperties(nil, &instance_ext_prop_count, nil) or_return
 	instance_ext_props := make(
 		[]vk.ExtensionProperties, 
 		instance_ext_prop_count, 
 		allocator=context.temp_allocator,
 	)
-	vk.EnumerateInstanceExtensionProperties(nil, &instance_ext_prop_count, raw_data(instance_ext_props))
+	vk.EnumerateInstanceExtensionProperties(
+		nil, &instance_ext_prop_count, 
+		raw_data(instance_ext_props),
+	) or_return
 
 	outer: for req_ext in req_instance_exts {
 		for &instance_ext_prop in instance_ext_props {
@@ -43,16 +62,17 @@ instance_init :: proc (i: ^Instance) {
 				continue outer
 			}
 		}
-		log.panicf("required extension '%v' not available", req_ext)
+		log.errorf("Required extension '%v' not available", req_ext)
+		return Instance_Init_Error.Required_Extension_Not_Available
 	}
 
 	// Instance layers
 	layers := make([dynamic]cstring, 0, allocator=context.temp_allocator)
 
 	layer_prop_count: u32 
-	vk.EnumerateInstanceLayerProperties(&layer_prop_count, nil)
+	vk.EnumerateInstanceLayerProperties(&layer_prop_count, nil) or_return
 	layer_props := make([]vk.LayerProperties, layer_prop_count, allocator=context.temp_allocator)
-	vk.EnumerateInstanceLayerProperties(&layer_prop_count, raw_data(layer_props))
+	vk.EnumerateInstanceLayerProperties(&layer_prop_count, raw_data(layer_props)) or_return
 
 	for &layer_prop in layer_props {
 		if bytes_to_string(layer_prop.layerName[:]) == "VK_LAYER_KHRONOS_validation" {
@@ -95,20 +115,32 @@ instance_init :: proc (i: ^Instance) {
 	}
 	instance_info.pNext = &debug_messenger_info
 
-	must(vk.CreateInstance(&instance_info, nil, &i.handle))
+	vk.CreateInstance(&instance_info, nil, &i.handle) or_return
 	vk.load_proc_addresses_instance(i.handle)
-	must(vk.CreateDebugUtilsMessengerEXT(
+	vk.CreateDebugUtilsMessengerEXT(
 		i.handle, 
 		&debug_messenger_info, nil, 
 		&i.debug_messenger,
-	))
+	) or_return
+
+	return nil
 }
 
 instance_destroy :: proc(i: ^Instance) {
-	vk.DestroyDebugUtilsMessengerEXT(i.handle, i.debug_messenger, nil)
-	vk.DestroyInstance(i.handle, nil)
-	log.destroy_console_logger(i.messenger_context.logger)
-	free(i.messenger_context)
+	if i == nil {
+		return
+	}
+
+	if i.handle != nil && i.debug_messenger != 0 {
+		vk.DestroyDebugUtilsMessengerEXT(i.handle, i.debug_messenger, nil)
+	}
+	if i.handle != nil {
+		vk.DestroyInstance(i.handle, nil)
+	}
+	if i.messenger_context != nil {
+		log.destroy_console_logger(i.messenger_context.logger)
+		free(i.messenger_context)
+	}
 	i^ = {}
 }
 
@@ -119,6 +151,10 @@ messenger_callback :: proc "system" (
 	callback_data: ^vk.DebugUtilsMessengerCallbackDataEXT,
 	user_data: rawptr,
 ) -> b32 {
+	if user_data == nil {
+		return false
+	}
+
 	context = (cast(^runtime.Context)user_data)^
 	
 	level: log.Level
