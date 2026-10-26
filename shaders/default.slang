@@ -22,13 +22,13 @@ struct Vertex {
 struct PointLight: Light {
     float3 position;
     float radius;
-    float intensity;
+    float power;
     float3 color;
 
     float3 get_incident_radiance(float3 position) {
         var to_light = this.position - position;
         var distance_sq = dot(to_light, to_light);
-        return (this.intensity * this.color) / (4.0 * PI * distance_sq);
+        return (this.power * this.color) / max(4.0 * PI * distance_sq, 0.0001);
     }
 
     float3 get_omega_i(float3 position) {
@@ -69,7 +69,7 @@ struct PushConstants {
 struct VertexOutput {
     float4 clip_position: SV_Position;
     float3 world_position;
-    float3 normal;
+    float3 world_normal;
     float2 tex_coords;
 }
 
@@ -81,11 +81,12 @@ VertexOutput vertex_main(uint instance_id: SV_InstanceID, uint vertex_id: SV_Ver
     Instance instance = constants.instances[instance_id];
     Vertex vertex = constants.vertices[vertex_id];
 
+    var world_normal = mul(float3x3(instance.object_to_world), vertex.normal);
     var world_position = mul(instance.object_to_world, float4(vertex.position, 1.0));
     output.clip_position = mul(constants.view.world_to_clip, float4(world_position, 1.0));
     output.world_position = world_position;
+    output.world_normal = world_normal;
     output.tex_coords = vertex.tex_coords;
-    output.normal = vertex.normal;
     return output;
 }
 
@@ -95,7 +96,7 @@ Sampler2D[] samplers;
 [shader("fragment")]
 float4 fragment_main(VertexOutput input): SV_Target {
     let albedo = samplers[0].Sample(input.tex_coords).rgb;
-    let normal = normalize(input.normal);
+    let normal = normalize(input.world_normal);
     
     var color = albedo 
         * constants.lighting.ambient_color 

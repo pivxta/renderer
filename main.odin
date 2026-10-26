@@ -96,7 +96,7 @@ main :: proc() {
 	append(&scene.point_lights, {
 		position = {0.0, 0.0, 0.0},
 		color = {1.0, 1.0, 0.5},
-		intensity = 100.0,
+		power = 100.0,
 	})
 
 	current_time := time.tick_now()

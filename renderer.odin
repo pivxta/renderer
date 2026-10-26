@@ -63,7 +63,7 @@ Instance_Data :: struct {
 Point_Light_Data :: struct {
 	position: [3]f32,
 	radius: f32,
-	intensity: f32,
+	power: f32,
 	color: [3]f32,
 }
 
@@ -216,34 +216,44 @@ write_frame_data :: proc(renderer: Renderer, frame: Frame_Context, scene: Scene)
 	view := View_Data { world_to_clip = get_world_to_clip_matrix(scene.camera, width, height) }
 	data.view = scratch_new_clone(frame.scratch, view) or_return
 
-	point_lights := make([]Point_Light_Data, len(scene.point_lights), context.temp_allocator)
+	point_lights := scratch_make(
+		frame.scratch, 
+		[]Point_Light_Data, 
+		count = len(scene.point_lights), 
+		zeroed = false,
+	) or_return
+
 	for point_light, i in scene.point_lights {
-		point_lights[i] = {
+		point_lights.data[i] = {
 			position = point_light.position,
 			radius = point_light.radius,
-			intensity = point_light.intensity,
+			power = point_light.power,
 			color = point_light.color,
 		}
 	}
 
-	dir_lights := make([]Dir_Light_Data, len(scene.directional_lights), context.temp_allocator)
+	dir_lights := scratch_make(
+		frame.scratch, 
+		[]Dir_Light_Data, 
+		count = len(scene.directional_lights), 
+		zeroed = false,
+	) or_return
+
 	for dir_light, i in scene.directional_lights {
-		dir_lights[i] = {
+		dir_lights.data[i] = {
 			direction = dir_light.direction,
 			illuminance = dir_light.illuminance,
 			color = dir_light.color,
 		}
 	}
 
-	point_lights_data := scratch_slice_clone(frame.scratch, point_lights) or_return
-	dir_lights_data := scratch_slice_clone(frame.scratch, dir_lights) or_return
 	lighting := Lighting_Data {
 		ambient_color = scene.ambient_light.color,
 		ambient_illuminance = scene.ambient_light.illuminance,
-		point_lights_address = point_lights_data.address,
-		point_light_count = u32(len(point_lights_data.data)),
-		dir_lights_address = dir_lights_data.address,
-		dir_light_count = u32(len(dir_lights_data.data)),
+		point_lights_address = point_lights.address,
+		point_light_count = u32(len(point_lights.data)),
+		dir_lights_address = dir_lights.address,
+		dir_light_count = u32(len(dir_lights.data)),
 	}
 	data.lighting = scratch_new_clone(frame.scratch, lighting) or_return
 

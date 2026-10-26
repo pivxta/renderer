@@ -16,7 +16,7 @@ Ambient_Light :: struct {
 Point_Light :: struct {
 	position: [3]f32,
 	radius: f32,
-	intensity: f32,
+	power: f32,
 	color: [3]f32,
 }
 

@@ -71,7 +71,9 @@ scratch_retire :: proc(s: ^Scratch_Buffer, value: u64) {
 scratch_flush :: proc(s: ^Scratch_Buffer, device: Device) -> Buffer_Error {
 	assert(s != nil)
 	for block in tring_pending_blocks(s.ring) {
-		buffer_flush(&s.buffer, device, block.start, block.end) or_return
+		if block.end > block.start {
+			buffer_flush(&s.buffer, device, block.start, block.end - block.start) or_return
+		}
 	}
 	return nil
 }
