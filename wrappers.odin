@@ -51,8 +51,8 @@ Buffer :: struct {
 	handle: vk.Buffer,
 	allocation: vma.Allocation,
 	mapped: []byte,
-	address: vk.DeviceAddress,
-	size: vk.DeviceSize,
+	address: Device_Address,
+	size: Device_Size,
 }
 
 Buffer_Init_Error :: enum {
@@ -391,7 +391,7 @@ format_aspect_mask :: proc(format: vk.Format) -> vk.ImageAspectFlags {
 buffer_init :: proc(
 	buffer: ^Buffer,
 	device: Device, 
-	#any_int size: vk.DeviceSize,
+	#any_int size: Device_Size,
 	buffer_usage: vk.BufferUsageFlags,
 	memory_usage: vma.MemoryUsage = .AUTO,
 	memory_flags: vma.AllocationCreateFlags = {},
@@ -410,7 +410,7 @@ buffer_init :: proc(
 	buffer_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
 		usage = buffer_usage,
-		size = vk.DeviceSize(size),
+		size = Device_Size(size),
 	}
 	alloc_create_info := vma.AllocationCreateInfo {
 		usage = memory_usage,
@@ -418,7 +418,7 @@ buffer_init :: proc(
 	}
 
 	handle: vk.Buffer
-	address: vk.DeviceAddress
+	address: Device_Address
 	allocation: vma.Allocation
 	alloc_info: vma.AllocationInfo
 
@@ -460,8 +460,8 @@ buffer_init :: proc(
 buffer_flush :: proc(
 	buffer: ^Buffer, 
 	device: Device, 
-	#any_int offset: vk.DeviceSize = 0,
-	#any_int size: vk.DeviceSize = 0,
+	#any_int offset: Device_Size = 0,
+	#any_int size: Device_Size = 0,
 	location := #caller_location,
 ) -> Buffer_Error {
 	assert(buffer != nil, loc=location)
@@ -472,7 +472,7 @@ buffer_flush :: proc(
 		return Buffer_Access_Error.Flush_Out_Of_Bounds
 	}
 	
-	flush_size: vk.DeviceSize
+	flush_size: Device_Size
 	if size == 0 {
 		flush_size = buffer.size - offset
 	} else {

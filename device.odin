@@ -9,6 +9,9 @@ REQUIRED_DEVICE_EXTS_VK12 := []cstring {
 	vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
 }
 
+Device_Size :: vk.DeviceSize
+Device_Address :: vk.DeviceAddress
+
 Device :: struct {
 	properties: vk.PhysicalDeviceProperties,
 	allocator: vma.Allocator,
