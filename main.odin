@@ -81,7 +81,23 @@ main :: proc() {
 				far = 1000.0,
 			},
 		},
+		ambient_light = {
+			illuminance = 1.0,
+			color = {0.2, 0.7, 1.0},
+		},
 	}
+
+	append(&scene.directional_lights, {
+		direction = {0.4, -1.0, 0.2},
+		color = {1.0, 1.0, 1.0},
+		illuminance = 2.0,
+	})
+
+	append(&scene.point_lights, {
+		position = {0.0, 0.0, 0.0},
+		color = {1.0, 1.0, 0.5},
+		intensity = 100.0,
+	})
 
 	current_time := time.tick_now()
 	for !window_should_close(window) {

@@ -67,6 +67,7 @@ scratch_retire :: proc(s: ^Scratch_Buffer, value: u64) {
 	tring_retire(&s.ring, value)
 }
 
+@(require_results)
 scratch_flush :: proc(s: ^Scratch_Buffer, device: Device) -> Buffer_Error {
 	assert(s != nil)
 	for block in tring_pending_blocks(s.ring) {

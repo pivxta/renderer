@@ -46,27 +46,52 @@ Renderer_Error :: union #shared_nil {
 	vk.Result,
 }
 
-View :: struct {
+View_Data :: struct {
 	world_to_clip: matrix[4, 4]f32,
 }
 
-Vertex :: struct {
+Vertex_Data :: struct {
 	position: [3]f32,
+	normal: [3]f32,
 	tex_coords: [2]f32,
 }
 
-Object_Instance :: struct {
+Instance_Data :: struct {
 	object_to_world: matrix[3, 4]f32,
 }
 
-Push_Constants :: struct {
+Point_Light_Data :: struct {
+	position: [3]f32,
+	radius: f32,
+	intensity: f32,
+	color: [3]f32,
+}
+
+Dir_Light_Data :: struct {
+	direction: [3]f32,
+	illuminance: f32,
+	color: [3]f32,
+}
+
+Lighting_Data :: struct {
+	ambient_illuminance: f32,
+	ambient_color: [3]f32,
+	point_lights_address: Device_Address,
+	dir_lights_address: Device_Address,
+	point_light_count: u32,
+	dir_light_count: u32,
+}
+
+Push_Constants_Data :: struct {
 	view_address: Device_Address,
 	instances_address: Device_Address,
 	vertices_address: Device_Address,
+	lighting_address: Device_Address,
 }
 
 Frame_Data :: struct {
-	view: Scratch_Ptr(View),
+	view: Scratch_Ptr(View_Data),
+	lighting: Scratch_Ptr(Lighting_Data),
 }
 
 @(require_results)
@@ -188,8 +213,40 @@ write_frame_data :: proc(renderer: Renderer, frame: Frame_Context, scene: Scene)
 ) {
 	width := int(renderer.surface.extent.width)
 	height := int(renderer.surface.extent.height)
-	view := View { world_to_clip = get_world_to_clip_matrix(scene.camera, width, height) }
+	view := View_Data { world_to_clip = get_world_to_clip_matrix(scene.camera, width, height) }
 	data.view = scratch_new_clone(frame.scratch, view) or_return
+
+	point_lights := make([]Point_Light_Data, len(scene.point_lights), context.temp_allocator)
+	for point_light, i in scene.point_lights {
+		point_lights[i] = {
+			position = point_light.position,
+			radius = point_light.radius,
+			intensity = point_light.intensity,
+			color = point_light.color,
+		}
+	}
+
+	dir_lights := make([]Dir_Light_Data, len(scene.directional_lights), context.temp_allocator)
+	for dir_light, i in scene.directional_lights {
+		dir_lights[i] = {
+			direction = dir_light.direction,
+			illuminance = dir_light.illuminance,
+			color = dir_light.color,
+		}
+	}
+
+	point_lights_data := scratch_slice_clone(frame.scratch, point_lights) or_return
+	dir_lights_data := scratch_slice_clone(frame.scratch, dir_lights) or_return
+	lighting := Lighting_Data {
+		ambient_color = scene.ambient_light.color,
+		ambient_illuminance = scene.ambient_light.illuminance,
+		point_lights_address = point_lights_data.address,
+		point_light_count = u32(len(point_lights_data.data)),
+		dir_lights_address = dir_lights_data.address,
+		dir_light_count = u32(len(dir_lights_data.data)),
+	}
+	data.lighting = scratch_new_clone(frame.scratch, lighting) or_return
+
 	return data, true
 }
 
@@ -306,22 +363,23 @@ record_draw_commands :: proc(
 	}
 	vk.CmdSetScissor(commands, 0, 1, &scissor)
 
-	constants := Push_Constants {
+	constants := Push_Constants_Data {
 		instances_address = renderer.instance_buffer.address,
 		vertices_address = renderer.vertex_buffer.address,
 		view_address = frame_data.view.address,
+		lighting_address = frame_data.lighting.address,
 	}
 	vk.CmdPushConstants(
-		commands, renderer.pipeline_layout, {.VERTEX}, 
-		0, size_of(Push_Constants), &constants,
+		commands, renderer.pipeline_layout, {.VERTEX, .FRAGMENT}, 
+		0, size_of(constants), &constants,
 	)
 
 	descriptor_set := renderer.descriptor_set
 	vk.CmdBindPipeline(commands, .GRAPHICS, renderer.pipeline)
 	vk.CmdBindDescriptorSets(commands, .GRAPHICS, renderer.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
 	vk.CmdDraw(commands, 
-	           u32(renderer.vertex_buffer.size) / size_of(Vertex),
-	           u32(renderer.instance_buffer.size) / size_of(Object_Instance), 
+	           u32(renderer.vertex_buffer.size) / size_of(Vertex_Data),
+	           u32(renderer.instance_buffer.size) / size_of(Instance_Data), 
 	    	   0, 0)
 	
 	vk.CmdEndRendering(commands)
@@ -460,52 +518,52 @@ destroy_textures :: proc(r: ^Renderer) {
 
 @(require_results)
 create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
-	vertices := []Vertex {
+	vertices := []Vertex_Data {
 		// -Z
-		{{-0.5, -0.5, -0.5}, {0.0, 1.0}},
-		{{0.5, -0.5, -0.5}, {1.0, 1.0}},
-		{{0.5, 0.5, -0.5}, {1.0, 0.0}},
-		{{-0.5, -0.5, -0.5}, {0.0, 1.0}},
-		{{0.5, 0.5, -0.5}, {1.0, 0.0}},
-		{{-0.5, 0.5, -0.5}, {0.0, 0.0}},
+		{{-0.5, -0.5, -0.5}, {0.0, 0.0, -1.0}, {0.0, 1.0}},
+		{{0.5, -0.5, -0.5}, {0.0, 0.0, -1.0}, {1.0, 1.0}},
+		{{0.5, 0.5, -0.5}, {0.0, 0.0, -1.0}, {1.0, 0.0}},
+		{{-0.5, -0.5, -0.5}, {0.0, 0.0, -1.0}, {0.0, 1.0}},
+		{{0.5, 0.5, -0.5}, {0.0, 0.0, -1.0}, {1.0, 0.0}},
+		{{-0.5, 0.5, -0.5}, {0.0, 0.0, -1.0}, {0.0, 0.0}},
 		// +Z
-		{{0.5, -0.5, 0.5}, {0.0, 1.0}},
-		{{-0.5, -0.5, 0.5}, {1.0, 1.0}},
-		{{-0.5, 0.5, 0.5}, {1.0, 0.0}},
-		{{0.5, -0.5, 0.5}, {0.0, 1.0}},
-		{{-0.5, 0.5, 0.5}, {1.0, 0.0}},
-		{{0.5, 0.5, 0.5}, {0.0, 0.0}},
+		{{0.5, -0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
+		{{-0.5, -0.5, 0.5}, {0.0, 0.0, 1.0}, {1.0, 1.0}},
+		{{-0.5, 0.5, 0.5}, {0.0, 0.0, 1.0}, {1.0, 0.0}},
+		{{0.5, -0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
+		{{-0.5, 0.5, 0.5}, {0.0, 0.0, 1.0}, {1.0, 0.0}},
+		{{0.5, 0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 0.0}},
 		// +X
-		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
-		{{0.5, -0.5, 0.5}, {1.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
-		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
-		{{0.5, 0.5, -0.5}, {0.0, 0.0}},
+		{{0.5, -0.5, -0.5}, {1.0, 0.0, 0.0}, {0.0, 1.0}},
+		{{0.5, -0.5, 0.5}, {1.0, 0.0, 0.0}, {1.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
+		{{0.5, -0.5, -0.5}, {1.0, 0.0, 0.0}, {0.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
+		{{0.5, 0.5, -0.5}, {1.0, 0.0, 0.0}, {0.0, 0.0}},
 		// -X
-		{{-0.5, -0.5, 0.5}, {0.0, 1.0}},
-		{{-0.5, -0.5, -0.5}, {1.0, 1.0}},
-		{{-0.5, 0.5, -0.5}, {1.0, 0.0}},
-		{{-0.5, -0.5, 0.5}, {0.0, 1.0}},
-		{{-0.5, 0.5, -0.5}, {1.0, 0.0}},
-		{{-0.5, 0.5, 0.5}, {0.0, 0.0}},
+		{{-0.5, -0.5, 0.5}, {-1.0, 0.0, 0.0}, {0.0, 1.0}},
+		{{-0.5, -0.5, -0.5}, {-1.0, 0.0, 0.0}, {1.0, 1.0}},
+		{{-0.5, 0.5, -0.5}, {-1.0, 0.0, 0.0}, {1.0, 0.0}},
+		{{-0.5, -0.5, 0.5}, {-1.0, 0.0, 0.0}, {0.0, 1.0}},
+		{{-0.5, 0.5, -0.5}, {-1.0, 0.0, 0.0}, {1.0, 0.0}},
+		{{-0.5, 0.5, 0.5}, {-1.0, 0.0, 0.0}, {0.0, 0.0}},
 		// +Y
-		{{-0.5, 0.5, -0.5}, {0.0, 1.0}},
-		{{0.5, 0.5, -0.5}, {1.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
-		{{-0.5, 0.5, -0.5}, {0.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {1.0, 0.0}},
-		{{-0.5, 0.5, 0.5}, {0.0, 0.0}},
+		{{-0.5, 0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 1.0}},
+		{{0.5, 0.5, -0.5}, {0.0, 1.0, 0.0}, {1.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {0.0, 1.0, 0.0}, {1.0, 0.0}},
+		{{-0.5, 0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 1.0}},
+		{{0.5, 0.5, 0.5}, {0.0, 1.0, 0.0}, {1.0, 0.0}},
+		{{-0.5, 0.5, 0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
 		// -Y
-		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
-		{{-0.5, -0.5, -0.5}, {1.0, 1.0}},
-		{{-0.5, -0.5, 0.5}, {1.0, 0.0}},
-		{{0.5, -0.5, -0.5}, {0.0, 1.0}},
-		{{-0.5, -0.5, 0.5}, {1.0, 0.0}},
-		{{0.5, -0.5, 0.5}, {0.0, 0.0}},
+		{{0.5, -0.5, -0.5}, {0.0, -1.0, 0.0}, {0.0, 1.0}},
+		{{-0.5, -0.5, -0.5}, {0.0, -1.0, 0.0}, {1.0, 1.0}},
+		{{-0.5, -0.5, 0.5}, {0.0, -1.0, 0.0}, {1.0, 0.0}},
+		{{0.5, -0.5, -0.5}, {0.0, -1.0, 0.0}, {0.0, 1.0}},
+		{{-0.5, -0.5, 0.5}, {0.0, -1.0, 0.0}, {1.0, 0.0}},
+		{{0.5, -0.5, 0.5}, {0.0, -1.0, 0.0}, {0.0, 0.0}},
 	}
 
-	instances := make([dynamic]Object_Instance, 0, 0, context.temp_allocator)
+	instances := make([dynamic]Instance_Data, 0, 0, context.temp_allocator)
 
 	rows := 10
 	columns := 10
@@ -516,7 +574,7 @@ create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
 				(f32(a) - f32(rows) * 0.5 + 0.5) * spacing, -1.0, 
 				(f32(b) - f32(columns) * 0.5 + 0.5) * spacing,
 			})
-			append(&instances, Object_Instance {
+			append(&instances, Instance_Data {
 				object_to_world = affine_to_matrix3x4(transform),
 			})
 		}
@@ -536,11 +594,11 @@ create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
 		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
 	) or_return
 
-	mapped_vertices := slice.reinterpret([]Vertex, r.vertex_buffer.mapped)
+	mapped_vertices := slice.reinterpret([]Vertex_Data, r.vertex_buffer.mapped)
 	copy(mapped_vertices, vertices)
 	buffer_flush(&r.vertex_buffer, r.device) or_return
 
-	mapped_instances := slice.reinterpret([]Object_Instance, r.instance_buffer.mapped)
+	mapped_instances := slice.reinterpret([]Instance_Data, r.instance_buffer.mapped)
 	copy(mapped_instances, instances[:])
 	buffer_flush(&r.instance_buffer, r.device) or_return
 
@@ -641,9 +699,9 @@ destroy_descriptor_sets :: proc(r: ^Renderer) {
 @(require_results)
 create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
 	push_constant_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX},
+		stageFlags = {.VERTEX, .FRAGMENT},
 		offset = 0,
-		size = u32(size_of(Push_Constants)),
+		size = u32(size_of(Push_Constants_Data)),
 	}
 	layout_info := vk.PipelineLayoutCreateInfo {
 		sType = .PIPELINE_LAYOUT_CREATE_INFO,

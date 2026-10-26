@@ -3,6 +3,27 @@ import "core:math"
 
 Scene :: struct {
 	camera: Camera,
+	ambient_light: Ambient_Light,
+	point_lights: [dynamic]Point_Light,
+	directional_lights: [dynamic]Directional_Light,
+}
+
+Ambient_Light :: struct {
+	illuminance: f32,
+	color: [3]f32,
+}
+
+Point_Light :: struct {
+	position: [3]f32,
+	radius: f32,
+	intensity: f32,
+	color: [3]f32,
+}
+
+Directional_Light :: struct {
+	direction: [3]f32,
+	illuminance: f32,
+	color: [3]f32,
 }
 
 Camera :: struct {

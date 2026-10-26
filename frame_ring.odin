@@ -136,7 +136,10 @@ frame_ring_destroy :: proc(f: ^Frame_Ring, device: Device) {
 }
 
 @(require_results)
-frame_begin :: proc(f: ^Frame_Ring, device: Device) -> (ctx: Frame_Context, result: vk.Result) {
+frame_begin :: proc(f: ^Frame_Ring, device: Device) -> (
+	ctx: Frame_Context, 
+	err: Frame_Ring_Error,
+) {
 	// Wait for the previous frame in the same ring position to finish
 	timeline_semaphore := f.timeline
 	timeline_signal := f.timeline_signals[f.ring_index]
@@ -176,12 +179,12 @@ frame_submit :: proc(
 	device: Device, 
 	signal: vk.Semaphore,
 	frame: Frame_Context, 
-) -> vk.Result {
+) -> Frame_Ring_Error {
 	assert(f != nil)
 	assert(frame.frame_counter == f.frame_counter)
 	assert(frame.ring_index == f.ring_index)
 
-	scratch_flush(&f.scratch, device)
+	scratch_flush(&f.scratch, device) or_return
 
 	command_buffer := f.command_buffers[f.ring_index]
 	vk.EndCommandBuffer(command_buffer) or_return
@@ -227,7 +230,7 @@ frame_submit :: proc(
 	f.timeline_signals[f.ring_index] = signal_value
 	f.ring_index = (f.ring_index + 1) % MAX_FRAMES_IN_FLIGHT
 	f.frame_counter += 1
-	return .SUCCESS
+	return nil
 }
 
 @(require_results)
