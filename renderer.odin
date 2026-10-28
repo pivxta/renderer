@@ -2,16 +2,18 @@ package main
 import "core:log"
 import _ "core:image/jpeg"
 import _ "core:image/png"
-import "core:image"
 import "core:slice"
-import "core:bytes"
 import vk "vendor:vulkan"
+
+STAGING_CAPACITY :: 128 * 1024 * 1024
+SCRATCH_CAPACITY :: 16 * 1024 * 1024
 
 Renderer :: struct {
 	instance: Instance,
 	device: Device,
 	surface: Surface,
 	frame_ring: Frame_Ring,
+	upload_queue: Upload_Queue,
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline: vk.Pipeline,
@@ -30,6 +32,7 @@ Renderer :: struct {
 }
 
 Renderer_Draw_Error :: enum {
+	None = 0,
 	Texture_Acquisition_Failed,
 	Presentation_Failed,
 	Out_Of_Scratch_Memory,
@@ -105,7 +108,8 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	instance_init(&r.instance) or_return
 	surface_init(&r.surface, r.instance, window) or_return
 	device_init(&r.device, r.instance, r.surface) or_return
-	frame_ring_init(&r.frame_ring, r.device) or_return
+	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
+	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
 	create_descriptor_sets(r) or_return
@@ -131,6 +135,7 @@ renderer_destroy :: proc (r: ^Renderer) {
 	destroy_pipeline_layout(r)
 	destroy_descriptor_sets(r)
 	destroy_depth_texture(r)
+	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
 	surface_destroy(&r.surface, r.instance, r.device)
 	device_destroy(&r.device)
@@ -141,6 +146,9 @@ renderer_destroy :: proc (r: ^Renderer) {
 @(require_results)
 renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	frame_context := frame_begin(&r.frame_ring, r.device) or_return
+	upload_queue_flush(&r.upload_queue, r.device)
+	upload_queue_retire(&r.upload_queue, frame_context)
+
 	frame_data, ok := write_frame_data(r^, frame_context, scene)
 	if !ok {
 		return Renderer_Draw_Error.Out_Of_Scratch_Memory
@@ -167,12 +175,14 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 		return Renderer_Draw_Error.Texture_Acquisition_Failed
 	}
 
+	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
 	frame_submit(
-		&r.frame_ring, r.device, 
-		surface_texture.presentable, 
+		&r.frame_ring, 
+		r.device, 
 		frame_context,
+		surface_texture.presentable, 
 	) or_return
 
 	#partial switch result := surface_present(r.surface, r.device, surface_texture); result {
@@ -408,37 +418,34 @@ record_image_barrier :: proc(cmd: vk.CommandBuffer, barrier: vk.ImageMemoryBarri
 
 @(require_results)
 load_textures :: proc(r: ^Renderer) -> Renderer_Error {
-	img, err := image.load_from_file("assets/rocksalbedo.jpg", {.alpha_add_if_missing})
+	image, err := image_load_from_file("assets/rocksalbedo.jpg")
 	if err != nil {
 		log.panic("failed to load image")
 	}
-	defer image.destroy(img)
-	if img.depth != 8 || img.channels != 4 {
-		log.panic("invalid image format")
-	}
+	defer image_destroy(&image)
 
-	pixels := bytes.buffer_to_bytes(&img.pixels)
-
-	staging_buffer: Buffer
-
-	buffer_init(
-		&staging_buffer, r.device,
-		size = slice.size(pixels), 
-		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
-		buffer_usage = {.TRANSFER_SRC},
-	) or_return
-	defer buffer_destroy(&staging_buffer, r.device)
-	copy(staging_buffer.mapped, pixels)
-	buffer_flush(&staging_buffer, r.device) or_return
-
-	texture_extent := vk.Extent3D {u32(img.width), u32(img.height), 1}
 	texture_init(
 		&r.texture, r.device,
 		type = .D2,
 		format = .R8G8B8A8_SRGB,
 		usage = {.TRANSFER_DST, .SAMPLED},
-		extent = texture_extent,
+		extent = {u32(image.width), u32(image.height), 1},
 	) or_return
+
+	ok := upload_texture(
+		&r.upload_queue, 
+		r.frame_ring, 
+		r.texture, 
+		image,
+		{ 
+			stages = {.FRAGMENT_SHADER},
+			access = {.SHADER_SAMPLED_READ},
+			layout = .SHADER_READ_ONLY_OPTIMAL,
+		},
+	)
+	if !ok {
+		log.panic("Failed to upload texture")
+	}
 
 	sampler_info := vk.SamplerCreateInfo {
 		sType = .SAMPLER_CREATE_INFO,
@@ -453,50 +460,6 @@ load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	}
 
 	vk.CreateSampler(r.device.logical, &sampler_info, nil, &r.sampler) or_return
-
-	subresource_range := view_subresource_range(r.texture.full_view)
-
-	cmd := begin_quick_command_buffer(r.frame_ring) or_return
-
-	record_image_barrier(cmd, {
-		image = r.texture.handle,
-		srcStageMask = {},
-		srcAccessMask = {},
-		dstStageMask = {.TRANSFER},
-		dstAccessMask = {.TRANSFER_WRITE},
-		oldLayout = .UNDEFINED,
-		newLayout = .TRANSFER_DST_OPTIMAL,
-		subresourceRange = subresource_range,
-	})
-
-	image_copy := vk.BufferImageCopy {
-		imageOffset = {0, 0, 0},
-		imageExtent = r.texture.extent,
-		imageSubresource = {
-			aspectMask = r.texture.full_view.aspect_mask,
-			baseArrayLayer = 0,
-			layerCount = 1,
-			mipLevel = 0,
-		},
-	}
-	vk.CmdCopyBufferToImage(
-		cmd, staging_buffer.handle, 
-		r.texture.handle, .TRANSFER_DST_OPTIMAL,
-		1, &image_copy,
-	)
-
-	record_image_barrier(cmd, {
-		image = r.texture.handle,
-		srcStageMask = {.TRANSFER},
-		srcAccessMask = {.TRANSFER_WRITE},
-		dstStageMask = {.FRAGMENT_SHADER},
-		dstAccessMask = {.SHADER_SAMPLED_READ},
-		oldLayout = .TRANSFER_DST_OPTIMAL,
-		newLayout = .SHADER_READ_ONLY_OPTIMAL,
-		subresourceRange = subresource_range,
-	})
-
-	submit_quick_command_buffer(r.frame_ring, r.device) or_return
 
 	desc_image_info := vk.DescriptorImageInfo {
 		imageLayout = .SHADER_READ_ONLY_OPTIMAL,

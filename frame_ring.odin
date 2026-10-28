@@ -2,13 +2,11 @@ package main
 import vk "vendor:vulkan"
 
 MAX_FRAMES_IN_FLIGHT :: 2
-SCRATCH_CAPACITY :: 16 * 1024 * 1024
 
 Frame_Ring :: struct {
-	scratch: Scratch_Buffer,
+	scratch: Scratch_Allocator,
 
 	command_pool: vk.CommandPool,
-	quick_command_buffer: vk.CommandBuffer,
 	command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer, 
 
 	timeline_value: u64,
@@ -23,9 +21,11 @@ Frame_Ring :: struct {
 Frame_Context :: struct {
 	ring_index: int,
 	frame_counter: u64,
+	current_timeline_value: u64,
+	finished_timeline_value: u64,
 	image_available: vk.Semaphore,
 	command_buffer: vk.CommandBuffer,
-	scratch: ^Scratch_Buffer,
+	scratch: ^Scratch_Allocator,
 }
 
 Frame_Ring_Error :: union #shared_nil {
@@ -34,7 +34,11 @@ Frame_Ring_Error :: union #shared_nil {
 }
 
 @(require_results)
-frame_ring_init :: proc(f: ^Frame_Ring, device: Device) -> (err: Frame_Ring_Error) {
+frame_ring_init :: proc(
+	f: ^Frame_Ring, 
+	device: Device, 
+	scratch_capacity: Device_Size,
+) -> (err: Frame_Ring_Error) {
 	assert(f != nil)
 
 	f^ = {}
@@ -66,19 +70,6 @@ frame_ring_init :: proc(f: ^Frame_Ring, device: Device) -> (err: Frame_Ring_Erro
 		raw_data(f.command_buffers[:]),
 	) or_return
 
-	quick_alloc_info := vk.CommandBufferAllocateInfo {
-		sType = .COMMAND_BUFFER_ALLOCATE_INFO,
-		level = .PRIMARY,
-		commandPool = f.command_pool,
-		commandBufferCount = 1,
-	}
-
-	vk.AllocateCommandBuffers(
-		device.logical, 
-		&quick_alloc_info, 
-		&f.quick_command_buffer,
-	) or_return
-
 	// Create timeline semaphore
 	timeline_type_info := vk.SemaphoreTypeCreateInfo {
 		sType = .SEMAPHORE_TYPE_CREATE_INFO,
@@ -100,7 +91,7 @@ frame_ring_init :: proc(f: ^Frame_Ring, device: Device) -> (err: Frame_Ring_Erro
 	}
 
 	// Create scratch buffer
-	scratch_init(&f.scratch, device, SCRATCH_CAPACITY) or_return
+	scratch_init(&f.scratch, device, scratch_capacity) or_return
 
 	return
 }
@@ -117,7 +108,6 @@ frame_ring_destroy :: proc(f: ^Frame_Ring, device: Device) {
 		f.command_pool = 0
 	}
 
-	f.quick_command_buffer = nil
 	for i in 0..<MAX_FRAMES_IN_FLIGHT {
 		f.command_buffers[i] = nil 
 	}
@@ -152,10 +142,11 @@ frame_begin :: proc(f: ^Frame_Ring, device: Device) -> (
 	vk.WaitSemaphores(device.logical, &wait_info, max(u64)) or_return
 
 	// Setup scratch buffer
-	current_value: u64
-	vk.GetSemaphoreCounterValue(device.logical, f.timeline, &current_value) or_return 
-	scratch_retire(&f.scratch, current_value)
-	scratch_begin(&f.scratch, f.timeline_value + 1)
+	finished_value: u64
+	current_value := f.timeline_value + 1
+	vk.GetSemaphoreCounterValue(device.logical, f.timeline, &finished_value) or_return 
+	scratch_retire(&f.scratch, finished_value)
+	scratch_begin(&f.scratch, current_value)
 
 	// Begin command buffer
 	command_buffer := f.command_buffers[f.ring_index]
@@ -167,6 +158,8 @@ frame_begin :: proc(f: ^Frame_Ring, device: Device) -> (
 
 	ctx.command_buffer = command_buffer
 	ctx.image_available = f.image_available[f.ring_index]
+	ctx.finished_timeline_value = finished_value
+	ctx.current_timeline_value = current_value
 	ctx.frame_counter = f.frame_counter
 	ctx.ring_index = f.ring_index
 	ctx.scratch = &f.scratch
@@ -177,8 +170,8 @@ frame_begin :: proc(f: ^Frame_Ring, device: Device) -> (
 frame_submit :: proc(
 	f: ^Frame_Ring, 
 	device: Device, 
-	signal: vk.Semaphore,
 	frame: Frame_Context, 
+	signal: vk.Semaphore,
 ) -> Frame_Ring_Error {
 	assert(f != nil)
 	assert(frame.frame_counter == f.frame_counter)
@@ -231,45 +224,4 @@ frame_submit :: proc(
 	f.ring_index = (f.ring_index + 1) % MAX_FRAMES_IN_FLIGHT
 	f.frame_counter += 1
 	return nil
-}
-
-@(require_results)
-begin_quick_command_buffer :: proc(f: Frame_Ring) -> (
-	cmd: vk.CommandBuffer, 
-	result: vk.Result,
-) {
-	vk.ResetCommandBuffer(f.quick_command_buffer, {}) or_return
-	vk.BeginCommandBuffer(f.quick_command_buffer, &vk.CommandBufferBeginInfo {
-		sType = .COMMAND_BUFFER_BEGIN_INFO,
-		flags = {.ONE_TIME_SUBMIT},
-	}) or_return
-
-	cmd = f.quick_command_buffer
-	return
-}
-
-@(require_results)
-submit_quick_command_buffer :: proc(f: Frame_Ring, device: Device) -> vk.Result {
-	vk.EndCommandBuffer(f.quick_command_buffer) or_return
-
-	cmd_buffer_info := vk.CommandBufferSubmitInfo {
-		sType = .COMMAND_BUFFER_SUBMIT_INFO, 
-		commandBuffer = f.quick_command_buffer,
-	}
-	submit_info := vk.SubmitInfo2 {
-		sType = .SUBMIT_INFO_2,
-		commandBufferInfoCount = 1,
-		pCommandBufferInfos = &cmd_buffer_info,
-	}
-
-	fence: vk.Fence
-	fence_info := vk.FenceCreateInfo{
-		sType = .FENCE_CREATE_INFO,
-	}
-	vk.CreateFence(device.logical, &fence_info, nil, &fence) or_return
-	defer vk.DestroyFence(device.logical, fence, nil)
-	vk.QueueSubmit2(device.graphics_queue, 1, &submit_info, fence) or_return
-	vk.WaitForFences(device.logical, 1, &fence, true, max(u64)) or_return
-
-	return .SUCCESS
 }

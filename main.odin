@@ -96,7 +96,7 @@ main :: proc() {
 	append(&scene.point_lights, {
 		position = {0.0, 0.0, 0.0},
 		color = {1.0, 1.0, 0.5},
-		power = 100.0,
+		power = 200.0,
 	})
 
 	current_time := time.tick_now()
@@ -134,6 +134,7 @@ main :: proc() {
 		free_all(context.temp_allocator)
 	}
 
+	scene_destroy(&scene)
 	renderer_destroy(&renderer)
 	window_destroy(window)
 }

@@ -48,6 +48,16 @@ Orthographic_Projection :: struct {
 	far: f32,
 }
 
+scene_destroy :: proc(scene: ^Scene) {
+	if scene == nil {
+		return
+	}
+
+	delete(scene.point_lights)
+	delete(scene.directional_lights)
+	scene^ = {}
+}
+
 get_view_to_clip_matrix :: proc (
 	projection: Projection, 
 	width: int, 

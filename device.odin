@@ -22,6 +22,7 @@ Device :: struct {
 }
 
 Device_Init_Error :: enum {
+	None = 0,
 	No_Suitable_Device,
 }
 

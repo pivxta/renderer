@@ -19,6 +19,7 @@ Surface_Texture :: struct {
 }
 
 Surface_Configure_Error :: enum {
+	None = 0,
 	No_Surface_Formats,
 	No_Present_Modes,
 }

@@ -32,12 +32,14 @@ Texture_View :: struct {
 }
 
 Texture_Access_Error :: enum {
+	None = 0,
 	Subresource_Range_Out_Of_Bounds,
 	Empty_Subresource_Range,
 	Invalid_View_Configuration,
 }
 
 Texture_Init_Error :: enum {
+	None = 0,
 	Allocation_Failed,
 }
 
@@ -56,11 +58,13 @@ Buffer :: struct {
 }
 
 Buffer_Init_Error :: enum {
+	None = 0,
 	Zero_Sized,
 	No_Device_Address_Available,
 }
 
 Buffer_Access_Error :: enum {
+	None = 0,
 	Flush_Out_Of_Bounds,
 }
 

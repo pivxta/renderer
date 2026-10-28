@@ -11,6 +11,7 @@ Instance :: struct {
 }
 
 Instance_Init_Error :: enum {
+	None = 0,
 	Required_Extension_Not_Available,
 }
 

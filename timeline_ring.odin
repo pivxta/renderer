@@ -82,6 +82,19 @@ tring_allocate :: proc(
 	return alloc, true
 }
 
+tring_allocate_with :: proc(
+	ring: ^Timeline_Ring, 
+	value: u64,
+	size: u64, 
+	alignment: u64,
+) -> (alloc: Timeline_Ring_Allocation, ok: bool) {
+	assert(value >= ring.current_value) 
+	assert(value > ring.committed_value)
+	ring.current_value = value
+
+	return tring_allocate(ring, size, alignment)
+}
+
 tring_pending_blocks :: proc(ring: Timeline_Ring) -> (ranges: [dynamic; 2]Timeline_Ring_Block) {
 	if ring.committed_head == ring.logical_head {
 		return
@@ -107,16 +120,29 @@ tring_begin :: proc(ring: ^Timeline_Ring, value: u64) {
 }
 
 tring_commit :: proc(ring: ^Timeline_Ring) {
-	assert(ring.current_value > ring.committed_value)
+	assert(ring.current_value >= ring.committed_value)
 	ring.committed_value = ring.current_value
-	if ring.logical_head > ring.committed_head {
-		queue.enqueue(&ring.committed_ranges, {
-			retire_value = ring.current_value,
-			logical_offset = ring.committed_head,
-			size = ring.logical_head - ring.committed_head,
-		})
-		ring.committed_head = ring.logical_head
+	if ring.logical_head == ring.committed_head {
+		return
 	}
+
+	size := ring.logical_head - ring.committed_head
+	if queue.len(ring.committed_ranges) > 0 {
+		last := queue.back_ptr(&ring.committed_ranges)
+		assert(last.logical_offset + last.size == ring.committed_head)
+		if last.retire_value == ring.committed_value {
+			last.size += size
+			ring.committed_head = ring.logical_head
+			return
+		}
+	}
+
+	queue.enqueue(&ring.committed_ranges, Timeline_Ring_Range {
+		retire_value = ring.committed_value,
+		logical_offset = ring.committed_head,
+		size = size,
+	})
+	ring.committed_head = ring.logical_head
 }
 
 tring_retire :: proc(ring: ^Timeline_Ring, value: u64) {
