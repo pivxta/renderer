@@ -54,7 +54,7 @@ image_load_from_file :: proc(
 
 	width, height, components: i32
 	if stbi.info(cfilename, &width, &height, &components) == 0 {
-		return
+		return {}, Image_Load_Error.Invalid_Or_Nonexistent_File
 	}
 
 	if components == 3 {
@@ -69,7 +69,7 @@ image_load_from_file :: proc(
 		loaded_bytes = stbi.load(cfilename, &width, &height, nil, components)
 	}
 	if loaded_bytes == nil {
-		return
+		return {}, Image_Load_Error.Invalid_Or_Nonexistent_File
 	}
 	defer stbi.image_free(loaded_bytes)
 	
@@ -92,7 +92,7 @@ image_load_from_file :: proc(
 	
 	image = image_make(int(width), int(height), format, allocator) or_return
 	mem.copy(raw_data(image.bytes), loaded_bytes, len(image.bytes))
-	return
+	return image, nil
 }
 
 image_destroy :: proc(image: ^Image) {
@@ -105,8 +105,15 @@ image_destroy :: proc(image: ^Image) {
 }
 
 image_pixels :: proc($T: typeid, image: ^Image) -> []T {
-	assert(size_of(T) == image_format_texel_size(image))
+	assert(image != nil)
+	assert(size_of(T) == image_format_texel_size(image.format))
 	return slice.reinterpret([]T, image.bytes)
+}
+
+image_is_valid :: proc(image: Image) -> bool {
+	return image.width > 0 &&
+	       image.height > 0 &&
+	       len(image.bytes) == image.width * image.height * image_format_texel_size(image.format)
 }
 
 image_format_texel_size :: proc(fmt: Image_Format) -> int {
@@ -124,8 +131,8 @@ image_format_texel_size :: proc(fmt: Image_Format) -> int {
 image_format_to_vk :: proc(fmt: Image_Format, srgb: bool) -> vk.Format {
 	if srgb {
 		switch fmt {
-		case .R_U8: return .R8_SRGB
-		case .Rg_U8: return .R8G8_SRGB 
+		case .R_U8: return .R8_UNORM
+		case .Rg_U8: return .R8G8_UNORM 
 		case .Rgba_U8: return .R8G8B8A8_SRGB
 		case .R_F32: return .R32_SFLOAT
 		case .Rg_F32: return .R32G32_SFLOAT

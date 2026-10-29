@@ -89,7 +89,7 @@ tring_allocate_with :: proc(
 	alignment: u64,
 ) -> (alloc: Timeline_Ring_Allocation, ok: bool) {
 	assert(value >= ring.current_value) 
-	assert(value > ring.committed_value)
+	assert(value >= ring.committed_value)
 	ring.current_value = value
 
 	return tring_allocate(ring, size, alignment)

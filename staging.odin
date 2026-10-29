@@ -8,8 +8,8 @@ Staging_Allocator :: struct {
 	alignment: Device_Size,
 }
 
-Staging_Memory :: struct {
-	data: []byte,
+Staging_Slice :: struct($T: typeid) {
+	data: []T,
 	offset: Device_Size,
 	buffer_handle: vk.Buffer,
 }
@@ -93,7 +93,7 @@ staging_make :: proc(
 	frame_ring: Frame_Ring,
 	$T: typeid/[]$E,
 	#any_int count: int,
-) -> (result: Staging_Memory, ok: bool) {
+) -> (result: Staging_Slice(E), ok: bool) {
 	assert(count >= 0)
 	if count == 0 {
 		return {}, true
@@ -117,14 +117,14 @@ staging_slice_clone :: proc(
 	allocator: ^Staging_Allocator, 
 	frame_ring: Frame_Ring,
 	src: []$E,
-) -> (result: Staging_Memory, ok: bool) {
+) -> (result: Staging_Slice(E), ok: bool) {
 	result = staging_make(allocator, frame_ring, []E, len(src)) or_return
 	copy(slice.reinterpret([]E, result.data), src)
 	return result, true
 }
 
 @(require_results)
-staging_slice_size :: proc(s: Staging_Memory) -> Device_Size {
+staging_slice_size :: proc(s: Staging_Slice($E)) -> Device_Size {
 	return Device_Size(slice.size(s.data))
 }
 

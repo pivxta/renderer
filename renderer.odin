@@ -146,7 +146,6 @@ renderer_destroy :: proc (r: ^Renderer) {
 @(require_results)
 renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	frame_context := frame_begin(&r.frame_ring, r.device) or_return
-	upload_queue_flush(&r.upload_queue, r.device)
 	upload_queue_retire(&r.upload_queue, frame_context)
 
 	frame_data, ok := write_frame_data(r^, frame_context, scene)
@@ -178,6 +177,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
+	upload_queue_flush(&r.upload_queue, r.device) or_return
 	frame_submit(
 		&r.frame_ring, 
 		r.device, 
@@ -427,7 +427,7 @@ load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	texture_init(
 		&r.texture, r.device,
 		type = .D2,
-		format = .R8G8B8A8_SRGB,
+		format = image_format_to_vk(image.format, srgb=true),
 		usage = {.TRANSFER_DST, .SAMPLED},
 		extent = {u32(image.width), u32(image.height), 1},
 	) or_return

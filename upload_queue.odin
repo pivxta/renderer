@@ -18,17 +18,15 @@ Resource_Usage :: struct {
 Texture_Upload :: struct {
 	texture: Texture,
 	usage: Resource_Usage,
-	staging: Staging_Memory,
+	staging: Staging_Slice(u8),
 	layer: u32,
-	offset: vk.Offset3D,
-	extent: vk.Extent3D,
 }
 
 @(private="file")
 Buffer_Upload :: struct {
 	buffer: Buffer,
 	usage: Resource_Usage,
-	staging: Staging_Memory,
+	staging: Staging_Slice(u8),
 	offset: Device_Size,
 }
 
@@ -65,15 +63,16 @@ upload_queue_destroy :: proc(u: ^Upload_Queue, device: Device) {
 	u^ = {}
 }
 
+upload_queue_retire :: proc(u: ^Upload_Queue, frame: Frame_Context) {
+	assert(u != nil)
+	staging_retire(&u.staging, frame.finished_timeline_value)
+}
+
+@(require_results)
 upload_queue_flush :: proc(u: ^Upload_Queue, device: Device) -> (err: Buffer_Error) {
 	assert(u != nil)
 	staging_flush(&u.staging, device) or_return
 	return
-}
-
-upload_queue_retire :: proc(u: ^Upload_Queue, frame: Frame_Context) {
-	assert(u != nil)
-	staging_retire(&u.staging, frame.finished_timeline_value)
 }
 
 @(require_results)
@@ -86,21 +85,13 @@ upload_buffer :: proc(
 	offset: Device_Size = 0,
 ) -> (ok: bool) {
 	assert(u != nil)
+	assert(buffer.size >= offset + Device_Size(slice.size(bytes)))
 
-	data_size := Device_Size(slice.size(bytes))
-	assert(buffer.size >= offset + data_size)
-
-	if buffer.mapped != nil {
-		copy(buffer.mapped[int(offset):], bytes)
-		return true
-	}
-
-	staging := staging_slice_clone(&u.staging, frame_ring, bytes) or_return
 	queue.enqueue(&u.pending, Buffer_Upload {
 		buffer = buffer,
 		usage = usage,
-		staging = staging,
 		offset = offset,
+		staging = staging_slice_clone(&u.staging, frame_ring, bytes) or_return,
 	})
 
 	return true	
@@ -114,13 +105,13 @@ upload_texture :: proc(
 	image: Image,
 	usage: Resource_Usage,
 	layer: int = 0,
-	offset: [3]int = {0, 0, 0},
 ) -> (ok: bool) {
 	assert(u != nil)
+	assert(image_is_valid(image))
+	assert(texture.extent.depth == 1)
+	assert(texture.extent.width == u32(image.width))
+	assert(texture.extent.height == u32(image.height))
 	assert(layer >= 0 && layer < int(texture.array_layers))
-	assert(offset.x >= 0 && image.width + offset.x <= int(texture.extent.width))
-	assert(offset.y >= 0 && image.height + offset.y <= int(texture.extent.height))
-	assert(offset.z >= 0 && offset.z <= int(texture.extent.depth))
 
 	staging := staging_slice_clone(&u.staging, frame_ring, image.bytes) or_return
 	queue.enqueue(&u.pending, Texture_Upload{
@@ -128,8 +119,6 @@ upload_texture :: proc(
 		usage = usage,
 		staging = staging,
 		layer = u32(layer),
-		extent = {u32(image.width), u32(image.height), 1},
-		offset = {i32(offset.x), i32(offset.y), i32(offset.z)},
 	})
 
 	return true	
@@ -238,8 +227,7 @@ record_texture_upload :: proc(
 	upload: Texture_Upload,
 ) {
 	image_copy := vk.BufferImageCopy {
-		imageOffset = upload.offset,
-		imageExtent = upload.extent,
+		imageExtent = upload.texture.extent,
 		bufferOffset = upload.staging.offset,
 		imageSubresource = {
 			aspectMask = upload.texture.full_view.aspect_mask,
