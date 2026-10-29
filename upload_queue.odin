@@ -87,6 +87,10 @@ upload_buffer :: proc(
 	assert(u != nil)
 	assert(buffer.size >= offset + Device_Size(slice.size(bytes)))
 
+	if len(bytes) == 0 {
+		return
+	}
+
 	queue.enqueue(&u.pending, Buffer_Upload {
 		buffer = buffer,
 		usage = usage,
@@ -108,10 +112,12 @@ upload_texture :: proc(
 ) -> (ok: bool) {
 	assert(u != nil)
 	assert(image_is_valid(image))
+	assert(image_format_matches_vk(image.format, texture.format))
 	assert(texture.extent.depth == 1)
 	assert(texture.extent.width == u32(image.width))
 	assert(texture.extent.height == u32(image.height))
 	assert(layer >= 0 && layer < int(texture.array_layers))
+	assert(.TRANSFER_DST in texture.usage)
 
 	staging := staging_slice_clone(&u.staging, frame_ring, image.bytes) or_return
 	queue.enqueue(&u.pending, Texture_Upload{
