@@ -80,8 +80,8 @@ Lighting_Data :: struct {
 	ambient_illuminance: f32,
 	ambient_color: [3]f32,
 	point_lights_address: Device_Address,
-	dir_lights_address: Device_Address,
 	point_light_count: u32,
+	dir_lights_address: Device_Address,
 	dir_light_count: u32,
 }
 

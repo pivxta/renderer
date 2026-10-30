@@ -54,8 +54,8 @@ struct Lighting {
     float ambient_illuminance;
     float3 ambient_color;
     ImmutablePtr<PointLight> point_lights;
-    ImmutablePtr<DirLight> dir_lights;
     uint point_light_count;
+    ImmutablePtr<DirLight> dir_lights;
     uint dir_light_count;
 }
 
