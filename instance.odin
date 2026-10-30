@@ -1,8 +1,12 @@
-package main
+package main 
 import "base:runtime"
 import "core:log"
 import "vendor:glfw"
 import vk "vendor:vulkan"
+
+ENABLE_VALIDATION :: #config(ENABLE_VALIDATION, ODIN_DEBUG)
+ENABLE_SYNC_VALIDATION :: #config(ENABLE_SYNC_VALIDATION, ODIN_DEBUG)
+VALIDATION_LAYER_NAME :: "VK_LAYER_KHRONOS_validation"
 
 Instance :: struct {
 	handle: vk.Instance,
@@ -21,11 +25,12 @@ Instance_Error :: union #shared_nil {
 }
 
 @(require_results)
-instance_init :: proc (i: ^Instance) -> (err: Instance_Error) {
-	assert(i != nil)
+instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
+	assert(instance != nil)
 
+	instance^ = {}
 	defer if err != nil {
-		instance_destroy(i)
+		instance_destroy(instance)
 	}
 
 	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
@@ -38,47 +43,62 @@ instance_init :: proc (i: ^Instance) -> (err: Instance_Error) {
 	}
 
 	// Instance extensions
-	req_instance_exts := make([dynamic]cstring, 0, allocator=context.temp_allocator)
-	append(&req_instance_exts, ..glfw.GetRequiredInstanceExtensions())
-	append(&req_instance_exts, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+	extensions := make([dynamic]cstring, 0, context.temp_allocator)
 
-	instance_exts := make([dynamic]cstring, 0, allocator=context.temp_allocator)
+	// Check all required extensions
+	extension_props := enumerate_extensions(nil, context.temp_allocator) or_return
 
-	instance_ext_prop_count: u32 
-	vk.EnumerateInstanceExtensionProperties(nil, &instance_ext_prop_count, nil) or_return
-	instance_ext_props := make(
-		[]vk.ExtensionProperties, 
-		instance_ext_prop_count, 
-		allocator=context.temp_allocator,
-	)
-	vk.EnumerateInstanceExtensionProperties(
-		nil, &instance_ext_prop_count, 
-		raw_data(instance_ext_props),
-	) or_return
-
-	outer: for req_ext in req_instance_exts {
-		for &instance_ext_prop in instance_ext_props {
-			if req_ext == cstring(raw_data(instance_ext_prop.extensionName[:])) {
-				append(&instance_exts, req_ext)
-				continue outer
-			}
+	required_extensions := glfw.GetRequiredInstanceExtensions()
+	for required_extension in required_extensions {
+		if check_extension(extension_props, required_extension) {
+			log.debugf("Enabled Vulkan extension '%v'", required_extension)
+			append(&extensions, required_extension)
+		} else {
+			log.errorf("Required extension '%v' not available", required_extension)
+			return Instance_Init_Error.Required_Extension_Not_Available
 		}
-		log.errorf("Required extension '%v' not available", req_ext)
-		return Instance_Init_Error.Required_Extension_Not_Available
 	}
-
+	
+	// Probe for the debug utils extension
+	debug_utils_enabled := false
+	if check_extension(extension_props, vk.EXT_DEBUG_UTILS_EXTENSION_NAME) {
+		log.debugf("Enabled Vulkan extension '%v'", vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+		append(&extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+		debug_utils_enabled = true
+	}
+	
 	// Instance layers
 	layers := make([dynamic]cstring, 0, allocator=context.temp_allocator)
+	layer_settings_enabled := false
 
-	layer_prop_count: u32 
-	vk.EnumerateInstanceLayerProperties(&layer_prop_count, nil) or_return
-	layer_props := make([]vk.LayerProperties, layer_prop_count, allocator=context.temp_allocator)
-	vk.EnumerateInstanceLayerProperties(&layer_prop_count, raw_data(layer_props)) or_return
+	when ENABLE_VALIDATION {
+		// Probe for validation layer
+		layer_prop_count: u32 
+		vk.EnumerateInstanceLayerProperties(&layer_prop_count, nil) or_return
+		layer_props := make([]vk.LayerProperties, layer_prop_count, allocator=context.temp_allocator)
+		vk.EnumerateInstanceLayerProperties(&layer_prop_count, raw_data(layer_props)) or_return
 
-	for &layer_prop in layer_props {
-		if bytes_to_string(layer_prop.layerName[:]) == "VK_LAYER_KHRONOS_validation" {
-			log.debug("Vulkan validation layers enabled")
-			append(&layers, "VK_LAYER_KHRONOS_validation")		  
+		validation_enabled := false
+		for &layer_prop in layer_props {
+			if bytes_to_string(layer_prop.layerName[:]) == VALIDATION_LAYER_NAME {
+				log.debug("Vulkan validation layers enabled")
+				append(&layers, VALIDATION_LAYER_NAME)
+				validation_enabled = true
+			}
+		}
+		
+		if validation_enabled {
+			// Probe for layer settings extension
+			layer_extension_props := enumerate_extensions(VALIDATION_LAYER_NAME, 
+			                                              context.temp_allocator) or_return
+
+			if check_extension(layer_extension_props, vk.EXT_LAYER_SETTINGS_EXTENSION_NAME) {
+				log.debugf("Enabled Vulkan extension '%v'", vk.EXT_LAYER_SETTINGS_EXTENSION_NAME)
+				append(&extensions, vk.EXT_LAYER_SETTINGS_EXTENSION_NAME)
+				layer_settings_enabled = true
+			}
+		} else {
+			log.warnf("Validation layer requested but %v is not installed", VALIDATION_LAYER_NAME)
 		}
 	}
 	
@@ -86,45 +106,104 @@ instance_init :: proc (i: ^Instance) -> (err: Instance_Error) {
 	instance_info := vk.InstanceCreateInfo {
 		sType = .INSTANCE_CREATE_INFO,
 		pApplicationInfo = &app_info,
-		enabledExtensionCount = u32(len(instance_exts)),
-		ppEnabledExtensionNames = raw_data(instance_exts),
+		enabledExtensionCount = u32(len(extensions)),
+		ppEnabledExtensionNames = raw_data(extensions),
 		enabledLayerCount = u32(len(layers)),
 		ppEnabledLayerNames = raw_data(layers),
 	}
 
-	severity: vk.DebugUtilsMessageSeverityFlagsEXT
-	if context.logger.lowest_level <= .Error {
-		severity |= {.ERROR}
+	layer_settings_info: vk.LayerSettingsCreateInfoEXT
+	validate_sync := b32(ENABLE_SYNC_VALIDATION)
+	validation_layer_settings := [?]vk.LayerSettingEXT {
+		{
+			pLayerName = VALIDATION_LAYER_NAME,
+			pSettingName = "validate_sync",
+			type = .BOOL32,
+			valueCount = 1,
+			pValues = &validate_sync,
+		},
 	}
-	if context.logger.lowest_level <= .Warning {
-		severity |= {.WARNING}
+	if layer_settings_enabled {
+		layer_settings_info = {
+			sType = .LAYER_SETTINGS_CREATE_INFO_EXT,
+			pNext = instance_info.pNext,
+			settingCount = u32(len(validation_layer_settings)),
+			pSettings = raw_data(validation_layer_settings[:]),
+		}
+
+		instance_info.pNext = &layer_settings_info
 	}
 
-	i.messenger_context = new_clone(runtime.default_context())
-	i.messenger_context.logger = log.create_console_logger(
-		lowest=context.logger.lowest_level,
-		opt=context.logger.options & {.Level, .Date, .Time, .Terminal_Color},
-		ident="Vulkan",
-	)
+	debug_messenger_info: vk.DebugUtilsMessengerCreateInfoEXT
+	if debug_utils_enabled {
+		severity: vk.DebugUtilsMessageSeverityFlagsEXT
+		if context.logger.lowest_level <= .Error {
+			severity |= {.ERROR}
+		}
+		if context.logger.lowest_level <= .Warning {
+			severity |= {.WARNING}
+		}
 
-	debug_messenger_info := vk.DebugUtilsMessengerCreateInfoEXT {
-		sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-		messageSeverity = severity,
-		messageType = {.GENERAL, .VALIDATION, .PERFORMANCE},
-		pfnUserCallback = messenger_callback,
-		pUserData = i.messenger_context,
+		messenger_context := new_clone(runtime.default_context())
+		messenger_context.logger = log.create_console_logger(
+			lowest=context.logger.lowest_level,
+			opt=context.logger.options & {.Level, .Date, .Time, .Terminal_Color},
+			ident="Vulkan",
+		)
+
+		debug_messenger_info = {
+			sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+			pNext = instance_info.pNext,
+			messageSeverity = severity,
+			messageType = {.GENERAL, .VALIDATION, .PERFORMANCE},
+			pfnUserCallback = messenger_callback,
+			pUserData = messenger_context,
+		}
+
+		instance.messenger_context = messenger_context
+		instance_info.pNext = &debug_messenger_info
 	}
-	instance_info.pNext = &debug_messenger_info
 
-	vk.CreateInstance(&instance_info, nil, &i.handle) or_return
-	vk.load_proc_addresses_instance(i.handle)
-	vk.CreateDebugUtilsMessengerEXT(
-		i.handle, 
-		&debug_messenger_info, nil, 
-		&i.debug_messenger,
-	) or_return
+	vk.CreateInstance(&instance_info, nil, &instance.handle) or_return
+	vk.load_proc_addresses_instance(instance.handle)
+
+	if debug_utils_enabled {
+		vk.CreateDebugUtilsMessengerEXT(
+			instance.handle, 
+			&debug_messenger_info, nil, 
+			&instance.debug_messenger,
+		) or_return
+	}
 
 	return nil
+}
+
+@(private="file")
+enumerate_extensions :: proc(
+	layer: cstring, 
+	allocator: runtime.Allocator,
+) -> (props: []vk.ExtensionProperties, result: vk.Result) {
+	count: u32 
+	vk.EnumerateInstanceExtensionProperties(layer, &count, nil) or_return
+
+	props = make([]vk.ExtensionProperties, count, allocator)
+	defer if result != .SUCCESS {
+		delete(props, allocator)
+	}
+	vk.EnumerateInstanceExtensionProperties(layer, &count, raw_data(props)) or_return
+
+	return props, .SUCCESS
+}
+
+@(private="file")
+check_extension :: proc(props: []vk.ExtensionProperties, extension: cstring) -> bool {
+	for &p in props {
+		current_extension_name := cstring(raw_data(p.extensionName[:]))
+		if current_extension_name == extension {
+			return true
+		}
+	}
+	return false
 }
 
 instance_destroy :: proc(i: ^Instance) {

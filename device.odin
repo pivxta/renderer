@@ -68,7 +68,7 @@ create_allocator :: proc(d: ^Device, instance: Instance) -> Device_Error {
 		physicalDevice   = d.physical,
 		device           = d.logical,
 		pVulkanFunctions = &vulkan_functions,
-		vulkanApiVersion = d.properties.apiVersion,
+		vulkanApiVersion = min(d.properties.apiVersion, vk.API_VERSION_1_3),
 	}
 	vma.CreateAllocator(create_info, &d.allocator) or_return
 	return nil
@@ -403,6 +403,13 @@ create_device_and_queues :: proc(d: ^Device) -> Device_Error {
 
 	vk.CreateDevice(d.physical, &device_info, nil, &d.logical) or_return
 	vk.load_proc_addresses_device(d.logical)
+	if d.properties.apiVersion < vk.API_VERSION_1_3 {
+		vk.CmdBeginRendering    = vk.CmdBeginRenderingKHR
+		vk.CmdEndRendering      = vk.CmdEndRenderingKHR
+		vk.CmdPipelineBarrier2  = vk.CmdPipelineBarrier2KHR
+		vk.QueueSubmit2         = vk.QueueSubmit2KHR
+	}
+
 	vk.GetDeviceQueue(d.logical, d.graphics_queue_family, 0, &d.graphics_queue)
 
 	return nil

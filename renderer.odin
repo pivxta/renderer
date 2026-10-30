@@ -286,9 +286,9 @@ record_commands :: proc(
 
 	record_image_barrier(commands, {
 		image = renderer.depth_texture.handle,
-		srcStageMask = {},
-		srcAccessMask = {},
-		dstStageMask = {.EARLY_FRAGMENT_TESTS},
+		srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+		srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE}, 
+		dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
 		dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_READ, .DEPTH_STENCIL_ATTACHMENT_WRITE}, 
 		oldLayout = .UNDEFINED, 
 		newLayout = .DEPTH_ATTACHMENT_OPTIMAL,
@@ -302,7 +302,7 @@ record_commands :: proc(
 	})
 	record_image_barrier(commands, {
 		image = surface.texture.handle,
-		srcStageMask = {},
+		srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
 		srcAccessMask = {},
 		dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
 		dstAccessMask = {.COLOR_ATTACHMENT_WRITE},

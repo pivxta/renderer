@@ -102,7 +102,7 @@ texture_init :: proc(
 		arrayLayers = array_layers,
 	}
 	alloc_info := vma.AllocationCreateInfo {
-		usage = .GPU_ONLY,
+		usage = .AUTO,
 	}
 
 	texture_destroy(texture, device)

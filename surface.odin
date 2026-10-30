@@ -271,19 +271,20 @@ pick_present_mode :: proc(modes: []vk.PresentModeKHR) -> vk.PresentModeKHR {
 
 @(private="file")
 pick_extent :: proc(caps: vk.SurfaceCapabilitiesKHR, window: ^Window) -> (vk.Extent2D, bool) {
-	if caps.currentExtent.width != max(u32) {
-		return caps.currentExtent, true
+	extent := caps.currentExtent
+	if extent.width == max(u32) {
+		width, height := window_get_framebuffer_size(window)
+		extent = {
+			width  = clamp(u32(max(width, 0)),  caps.minImageExtent.width,  caps.maxImageExtent.width),
+			height = clamp(u32(max(height, 0)), caps.minImageExtent.height, caps.maxImageExtent.height),
+		}
 	}
 
-	width, height := window_get_framebuffer_size(window)
-	if width <= 0 || height <= 0 {
+	if extent.width == 0 || extent.height == 0 {
 		return {}, false
 	}
 
-	return {
-		width = clamp(u32(width), caps.minImageExtent.width, caps.maxImageExtent.width),
-		height = clamp(u32(height), caps.minImageExtent.height, caps.maxImageExtent.height),
-	}, true
+	return extent, true
 }
 
 @(private="file")

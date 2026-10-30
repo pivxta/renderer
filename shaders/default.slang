@@ -98,7 +98,7 @@ float4 fragment_main(VertexOutput input): SV_Target {
     let albedo = samplers[0].Sample(input.tex_coords).rgb;
     let normal = normalize(input.world_normal);
     
-    var color = albedo 
+    var color = albedo / PI
         * constants.lighting.ambient_color 
         * constants.lighting.ambient_illuminance;
 
