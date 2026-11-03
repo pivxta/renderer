@@ -4,7 +4,7 @@ import vk "vendor:vulkan"
 MAX_FRAMES_IN_FLIGHT :: 2
 
 Frame_Ring :: struct {
-	scratch: Scratch_Allocator,
+	scratch: Scratch_Buffer,
 
 	command_pool: vk.CommandPool,
 	command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer, 
@@ -25,7 +25,7 @@ Frame_Context :: struct {
 	finished_timeline_value: u64,
 	image_available: vk.Semaphore,
 	command_buffer: vk.CommandBuffer,
-	scratch: ^Scratch_Allocator,
+	scratch: ^Scratch_Buffer,
 }
 
 Frame_Ring_Error :: union #shared_nil {

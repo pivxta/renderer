@@ -4,19 +4,12 @@ import vk "vendor:vulkan"
 
 MINIMUM_SCRATCH_ALIGNMENT :: 16
 
-Scratch_Allocator :: struct {
+Scratch_Buffer :: struct {
 	buffer: Buffer,
 	ring: Timeline_Ring,
 }
 
-Scratch_Ptr :: struct($T: typeid) {
-	data: ^T,
-	offset: Device_Size,
-	address: Device_Address,
-	buffer_handle: vk.Buffer,
-}
-
-Scratch_Slice :: struct($T: typeid) {
+Scratch_Subbuffer :: struct($T: typeid) {
 	data: []T,
 	offset: Device_Size,
 	address: Device_Address,
@@ -25,19 +18,19 @@ Scratch_Slice :: struct($T: typeid) {
 
 @(require_results)
 scratch_init :: proc(
-	s: ^Scratch_Allocator, 
+	scratch: ^Scratch_Buffer, 
 	device: Device, 
 	capacity: Device_Size,
 ) -> (err: Buffer_Error) {
-	assert(s != nil)
+	assert(scratch != nil)
 
 	defer if err != nil {
-		scratch_destroy(s, device)
+		scratch_destroy(scratch, device)
 	}
 
-	tring_init(&s.ring, u64(capacity))
+	tring_init(&scratch.ring, u64(capacity))
 	buffer_init(
-		&s.buffer, device,
+		&scratch.buffer, device,
 		size = capacity,
 		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
 		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
@@ -46,37 +39,37 @@ scratch_init :: proc(
 	return nil
 }
 
-scratch_destroy :: proc(s: ^Scratch_Allocator, device: Device) {
-	if s == nil {
+scratch_destroy :: proc(scratch: ^Scratch_Buffer, device: Device) {
+	if scratch == nil {
 		return
 	}
 
-	buffer_destroy(&s.buffer, device)
-	tring_destroy(&s.ring)
-	s^ = {}
+	buffer_destroy(&scratch.buffer, device)
+	tring_destroy(&scratch.ring)
+	scratch^ = {}
 }
 
-scratch_begin :: proc(s: ^Scratch_Allocator, value: u64) {
-	assert(s != nil)
-	tring_begin(&s.ring, value)
+scratch_begin :: proc(scratch: ^Scratch_Buffer, value: u64) {
+	assert(scratch != nil)
+	tring_begin(&scratch.ring, value)
 }
 
-scratch_commit :: proc(s: ^Scratch_Allocator) {
-	assert(s != nil)
-	tring_commit(&s.ring)
+scratch_commit :: proc(scratch: ^Scratch_Buffer) {
+	assert(scratch != nil)
+	tring_commit(&scratch.ring)
 }
 
-scratch_retire :: proc(s: ^Scratch_Allocator, value: u64) {
-	assert(s != nil)
-	tring_retire(&s.ring, value)
+scratch_retire :: proc(scratch: ^Scratch_Buffer, value: u64) {
+	assert(scratch != nil)
+	tring_retire(&scratch.ring, value)
 }
 
 @(require_results)
-scratch_flush :: proc(s: ^Scratch_Allocator, device: Device) -> Buffer_Error {
-	assert(s != nil)
-	for block in tring_pending_blocks(s.ring) {
+scratch_flush :: proc(scratch: ^Scratch_Buffer, device: Device) -> Buffer_Error {
+	assert(scratch != nil)
+	for block in tring_pending_blocks(scratch.ring) {
 		if block.end > block.start {
-			buffer_flush(&s.buffer, device, block.start, block.end - block.start) or_return
+			buffer_flush(&scratch.buffer, device, block.start, block.end - block.start) or_return
 		}
 	}
 	return nil
@@ -84,12 +77,12 @@ scratch_flush :: proc(s: ^Scratch_Allocator, device: Device) -> Buffer_Error {
 
 @(private="file")
 scratch_allocate_bytes :: proc(
-	s: ^Scratch_Allocator, 
+	scratch: ^Scratch_Buffer, 
 	size: Device_Size, 
 	alignment: Device_Size,
 ) -> (data: []byte, offset: Device_Size, ok: bool) {
 	allocation, has := tring_allocate(
-		&s.ring, 
+		&scratch.ring, 
 		u64(size), 
 		u64(max(alignment, MINIMUM_SCRATCH_ALIGNMENT)),
 	)
@@ -98,18 +91,18 @@ scratch_allocate_bytes :: proc(
 	}
 
 	offset = Device_Size(allocation.offset)
-	data = s.buffer.mapped[allocation.offset:][:allocation.size]
+	data = scratch.buffer.mapped[allocation.offset:][:allocation.size]
 	return data, offset, true
 }
 
 @(require_results)
 scratch_make :: proc(
-	s: ^Scratch_Allocator,
+	scratch: ^Scratch_Buffer,
 	$T: typeid/[]$E,
 	#any_int count: int,
 	alignment := 0,
 	zeroed := true,
-) -> (result: Scratch_Slice(E), ok: bool) {
+) -> (result: Scratch_Subbuffer(E), ok: bool) {
 	assert(count >= 0)
 	if count == 0 {
 		return {}, true
@@ -117,14 +110,14 @@ scratch_make :: proc(
 
 	size := Device_Size(count * size_of(E))
 	align := Device_Size(alignment if alignment > 0 else align_of(E))
-	bytes, offset := scratch_allocate_bytes(s, size, align) or_return
+	bytes, offset := scratch_allocate_bytes(scratch, size, align) or_return
 	if zeroed {
 		slice.zero(bytes)
 	}
 
-	return Scratch_Slice(E) {
-		buffer_handle = s.buffer.handle,
-		address = s.buffer.address + Device_Address(offset),
+	return Scratch_Subbuffer(E) {
+		buffer_handle = scratch.buffer.handle,
+		address = scratch.buffer.address + Device_Address(offset),
 		data = slice.reinterpret([]E, bytes),
 		offset = offset,
 	}, true
@@ -132,42 +125,36 @@ scratch_make :: proc(
 
 @(require_results)
 scratch_new :: proc(
-	s: ^Scratch_Allocator,
+	scratch: ^Scratch_Buffer,
 	$T: typeid,
 	alignment := 0,
 	zeroed := true,
-) -> (result: Scratch_Ptr(T), ok: bool) {
-	single := scratch_make(s, []T, 1, alignment, zeroed) or_return
-	return Scratch_Ptr(T) {
-		data = &single.data[0],
-		offset = single.offset,
-		address = single.address,
-		buffer_handle = single.buffer_handle,
-	}, true
+) -> (result: Scratch_Subbuffer(T), ok: bool) {
+	return scratch_make(scratch, []T, 1, alignment, zeroed)
 }
 
 @(require_results)
 scratch_new_clone :: proc(
-	s: ^Scratch_Allocator,
+	scratch: ^Scratch_Buffer,
 	value: $T,
 	alignment := 0,
-) -> (result: Scratch_Ptr(T), ok: bool) {
-	result = scratch_new(s, T, alignment, zeroed = false) or_return
-	result.data^ = value
+) -> (result: Scratch_Subbuffer(T), ok: bool) {
+	result = scratch_new(scratch, T, alignment, zeroed = false) or_return
+	result.data[0] = value
 	return result, true
 }
 
 @(require_results)
 scratch_slice_clone :: proc(
-	s: ^Scratch_Allocator,
+	scratch: ^Scratch_Buffer,
 	src: []$E,
 	alignment := 0,
 ) -> (result: Scratch_Slice(E), ok: bool) {
-	result = scratch_make(s, []E, len(src), alignment, zeroed = false) or_return
+	result = scratch_make(scratch, []E, len(src), alignment, zeroed = false) or_return
 	copy(result.data, src)
 	return result, true
 }
 
-scratch_slice_size :: proc(s: Scratch_Slice($E)) -> Device_Size {
-	return Device_Size(slice.size(s.data))
+scratch_subbuffer_size :: proc(subbuffer: Scratch_Subbuffer($E)) -> Device_Size {
+	return Device_Size(slice.size(subbuffer.data))
 }

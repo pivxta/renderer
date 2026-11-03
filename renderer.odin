@@ -2,7 +2,6 @@ package main
 import "core:log"
 import _ "core:image/jpeg"
 import _ "core:image/png"
-import "core:slice"
 import vk "vendor:vulkan"
 
 STAGING_CAPACITY :: 128 * 1024 * 1024
@@ -14,6 +13,7 @@ Renderer :: struct {
 	surface: Surface,
 	frame_ring: Frame_Ring,
 	upload_queue: Upload_Queue,
+	mesh_pool: Pool_Buffer,
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline: vk.Pipeline,
@@ -24,8 +24,8 @@ Renderer :: struct {
 	descriptor_set_layout: vk.DescriptorSetLayout,
 	descriptor_set: vk.DescriptorSet,
 
-	instance_buffer: Buffer,
-	vertex_buffer: Buffer,
+	vertex_buffer: Pool_Subbuffer(Vertex_Data),
+	instance_buffer: Pool_Subbuffer(Instance_Data),
 
 	texture: Texture,
 	sampler: vk.Sampler,
@@ -93,8 +93,8 @@ Push_Constants_Data :: struct {
 }
 
 Frame_Data :: struct {
-	view: Scratch_Ptr(View_Data),
-	lighting: Scratch_Ptr(Lighting_Data),
+	view: Scratch_Subbuffer(View_Data),
+	lighting: Scratch_Subbuffer(Lighting_Data),
 }
 
 @(require_results)
@@ -110,6 +110,17 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	device_init(&r.device, r.instance, r.surface) or_return
 	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
 	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
+	pool_init(
+		&r.mesh_pool, r.device,
+		capacity = 1 * 1024 * 1024,
+		buffer_usage = {
+			.TRANSFER_DST,
+			.STORAGE_BUFFER, 
+			.INDEX_BUFFER, 
+			.SHADER_DEVICE_ADDRESS,
+		},
+	)
+
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
 	create_descriptor_sets(r) or_return
@@ -135,6 +146,7 @@ renderer_destroy :: proc (r: ^Renderer) {
 	destroy_pipeline_layout(r)
 	destroy_descriptor_sets(r)
 	destroy_depth_texture(r)
+	pool_destroy(&r.mesh_pool, r.device)
 	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
 	surface_destroy(&r.surface, r.instance, r.device)
@@ -146,8 +158,6 @@ renderer_destroy :: proc (r: ^Renderer) {
 @(require_results)
 renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	frame_context := frame_begin(&r.frame_ring, r.device) or_return
-	upload_queue_retire(&r.upload_queue, frame_context)
-
 	frame_data, ok := write_frame_data(r^, frame_context, scene)
 	if !ok {
 		return Renderer_Draw_Error.Out_Of_Scratch_Memory
@@ -177,6 +187,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
+	upload_queue_retire(&r.upload_queue, frame_context)
 	upload_queue_flush(&r.upload_queue, r.device) or_return
 	frame_submit(
 		&r.frame_ring, 
@@ -420,7 +431,7 @@ record_image_barrier :: proc(cmd: vk.CommandBuffer, barrier: vk.ImageMemoryBarri
 load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	image, err := image_load_from_file("assets/rocksalbedo.jpg")
 	if err != nil {
-		log.panic("failed to load image")
+		log.panic("failed to load image") // ok to panic here since this is temporary code
 	}
 	defer image_destroy(&image)
 
@@ -553,34 +564,50 @@ create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
 		}
 	}
 
-	buffer_init(
-		&r.vertex_buffer, r.device, 
-		size = slice.size(vertices),
-		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
-	) or_return
+	ok: bool
 
-	buffer_init(
-		&r.instance_buffer, r.device, 
-		size = slice.size(instances[:]),
-		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
-	) or_return
+	if r.vertex_buffer, ok = pool_make(&r.mesh_pool, []Vertex_Data, len(vertices)); !ok {
+		panic("Failed to create vertex buffer")
+	}
 
-	mapped_vertices := slice.reinterpret([]Vertex_Data, r.vertex_buffer.mapped)
-	copy(mapped_vertices, vertices)
-	buffer_flush(&r.vertex_buffer, r.device) or_return
+	if r.instance_buffer, ok = pool_make(&r.mesh_pool, []Instance_Data, len(instances)); !ok {
+		panic("Failed to create instance buffer")
+	}
+	
+	ok = upload_subbuffer(
+		&r.upload_queue,
+		r.frame_ring,
+		r.vertex_buffer,
+		vertices,
+		{
+			stages = {.VERTEX_SHADER},
+			access = {.SHADER_STORAGE_READ},
+		},
+	)
+	if !ok {
+		panic("Failed to upload vertex buffer")
+	}
 
-	mapped_instances := slice.reinterpret([]Instance_Data, r.instance_buffer.mapped)
-	copy(mapped_instances, instances[:])
-	buffer_flush(&r.instance_buffer, r.device) or_return
+	ok = upload_subbuffer(
+		&r.upload_queue,
+		r.frame_ring,
+		r.instance_buffer,
+		instances[:],
+		{
+			stages = {.VERTEX_SHADER},
+			access = {.SHADER_STORAGE_READ},
+		},
+	)
+	if !ok {
+		panic("Failed to upload instance buffer")
+	}
 
 	return nil
 }
 
 destroy_buffers :: proc(r: ^Renderer) {
-	buffer_destroy(&r.instance_buffer, r.device)
-	buffer_destroy(&r.vertex_buffer, r.device)
+	pool_free(&r.mesh_pool, &r.instance_buffer)
+	pool_free(&r.mesh_pool, &r.vertex_buffer)
 }
 
 @(require_results)

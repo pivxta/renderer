@@ -4,7 +4,7 @@ import "core:slice"
 import vk "vendor:vulkan"
 
 Upload_Queue :: struct {
-	staging: Staging_Allocator,
+	staging: Staging_Buffer,
 	pending: queue.Queue(Upload),	
 }
 
@@ -18,15 +18,15 @@ Resource_Usage :: struct {
 Texture_Upload :: struct {
 	texture: Texture,
 	usage: Resource_Usage,
-	staging: Staging_Slice(u8),
+	staging: Staging_Subbuffer(u8),
 	layer: u32,
 }
 
 @(private="file")
 Buffer_Upload :: struct {
-	buffer: Buffer,
+	buffer: vk.Buffer,
 	usage: Resource_Usage,
-	staging: Staging_Slice(u8),
+	staging: Staging_Subbuffer(u8),
 	offset: Device_Size,
 }
 
@@ -92,9 +92,36 @@ upload_buffer :: proc(
 	}
 
 	queue.enqueue(&u.pending, Buffer_Upload {
-		buffer = buffer,
+		buffer = buffer.handle,
 		usage = usage,
 		offset = offset,
+		staging = staging_slice_clone(&u.staging, frame_ring, bytes) or_return,
+	})
+
+	return true	
+}
+
+@(require_results)
+upload_subbuffer :: proc(
+	u: ^Upload_Queue, 
+	frame_ring: Frame_Ring,
+	buffer: Pool_Subbuffer($T), 
+	values: []T,
+	usage: Resource_Usage,
+	offset: Device_Size = 0,
+) -> (ok: bool) {
+	assert(u != nil)
+	assert(buffer.size >= offset + Device_Size(slice.size(values)))
+
+	if len(values) == 0 {
+		return
+	}
+
+	bytes := slice.reinterpret([]u8, values)
+	queue.enqueue(&u.pending, Buffer_Upload {
+		buffer = buffer.buffer_handle,
+		offset = buffer.offset + offset,
+		usage = usage,
 		staging = staging_slice_clone(&u.staging, frame_ring, bytes) or_return,
 	})
 
@@ -204,13 +231,13 @@ record_buffer_upload :: proc(
 	buffer_copy := vk.BufferCopy {
 		srcOffset = upload.staging.offset,
 		dstOffset = upload.offset,
-		size = staging_slice_size(upload.staging),
+		size = staging_subbuffer_size(upload.staging),
 	}
 
 	vk.CmdCopyBuffer(
 		commands,
 		upload.staging.buffer_handle,
-		upload.buffer.handle,
+		upload.buffer,
 		1, &buffer_copy,
 	)
 
@@ -220,9 +247,9 @@ record_buffer_upload :: proc(
 		srcAccessMask = {.TRANSFER_WRITE},
 		dstStageMask = upload.usage.stages,
 		dstAccessMask = upload.usage.access,
-		buffer = upload.buffer.handle,
+		buffer = upload.buffer,
 		offset = upload.offset,
-		size = staging_slice_size(upload.staging),
+		size = staging_subbuffer_size(upload.staging),
 	})
 }
 
