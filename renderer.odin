@@ -119,7 +119,7 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 			.INDEX_BUFFER, 
 			.SHADER_DEVICE_ADDRESS,
 		},
-	)
+	) or_return
 
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return

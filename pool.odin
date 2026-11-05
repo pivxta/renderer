@@ -1,5 +1,6 @@
 package main
 import "core:slice"
+import "core:math/bits"
 import vk "vendor:vulkan"
 import "third_party/vma"
 
@@ -10,13 +11,14 @@ Pool_Subbuffer :: struct($T: typeid) {
 	size: Device_Size,
 	buffer_handle: vk.Buffer,
 	allocation_handle: vma.VirtualAllocation,
-}
+} 
 
 Pool_Buffer :: struct {
 	buffer: Buffer,
 	block: vma.VirtualBlock,
 }
 
+@(require_results)
 pool_init :: proc(
 	pool: ^Pool_Buffer, 
 	device: Device, 
@@ -25,12 +27,16 @@ pool_init :: proc(
 	memory_usage: vma.MemoryUsage = .AUTO,
 	memory_flags: vma.AllocationCreateFlags = {},
 	location := #caller_location,
-) -> Buffer_Error {
+) -> (err: Buffer_Error) {
 	assert(pool != nil)
 	pool^ = {}
 
+	defer if err != nil {
+		pool_destroy(pool, device)
+	}
+
 	buffer_init(&pool.buffer, device, capacity, buffer_usage, memory_usage, memory_flags) or_return
-	vma.CreateVirtualBlock({size = capacity}, &pool.block)
+	vma.CreateVirtualBlock({size = capacity}, &pool.block) or_return
 	return nil
 }
 
@@ -39,8 +45,11 @@ pool_destroy :: proc(pool: ^Pool_Buffer, device: Device) {
 		return
 	}
 
-	vma.ClearVirtualBlock(pool.block)
-	vma.DestroyVirtualBlock(pool.block)
+	if pool.block != nil {
+		vma.ClearVirtualBlock(pool.block)
+		vma.DestroyVirtualBlock(pool.block)
+	}
+
 	buffer_destroy(&pool.buffer, device)
 	pool^ = {}
 }
@@ -51,6 +60,8 @@ pool_allocate :: proc(
 	size: Device_Size, 
 	alignment: Device_Size,
 ) -> (allocation: vma.VirtualAllocation, offset: Device_Size, ok: bool) {
+	assert(bits.is_power_of_two(u64(alignment)))
+
 	result := vma.VirtualAllocate(
 		pool.block, 
 		{size = size, alignment = alignment}, 
@@ -64,15 +75,22 @@ pool_allocate :: proc(
 	}
 
 	return allocation, offset, true
-	
 }
 
+@(require_results)
 pool_make :: proc(
 	pool: ^Pool_Buffer, 
 	$T: typeid/[]$E, 
 	#any_int count: int,
 	#any_int alignment := 0,
 ) -> (Pool_Subbuffer(E), bool) {
+	assert(pool != nil)
+	assert(count >= 0)
+
+	if count == 0 {
+		return {}, true
+	}
+
 	size := Device_Size(size_of(E) * count)
 	align := Device_Size(max(align_of(E), alignment))
 	allocation, offset, ok := pool_allocate(pool, size, align)
@@ -92,6 +110,7 @@ pool_make :: proc(
 	}, true
 }
 
+@(require_results)
 pool_new :: proc(
 	pool: ^Pool_Buffer, 
 	$T: typeid, 
@@ -102,7 +121,20 @@ pool_new :: proc(
 
 pool_free :: proc(pool: ^Pool_Buffer, subbuffer: ^Pool_Subbuffer($E)) {
 	assert(pool != nil)
+	if subbuffer.allocation_handle == 0 {
+		return
+	}
+
 	assert(pool.buffer.handle == subbuffer.buffer_handle)
 	vma.VirtualFree(pool.block, subbuffer.allocation_handle)
 	subbuffer^ = {}
+}
+
+@(require_results)
+pool_subbuffer_flush :: proc(
+	subbuffer: ^Pool_Subbuffer, 
+	device: Device, 
+	#any_int offset: Device_Size = 0,
+	#any_int size: Device_Size = 0,
+) -> Buffer_Error {
 }

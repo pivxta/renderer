@@ -100,7 +100,7 @@ scratch_make :: proc(
 	scratch: ^Scratch_Buffer,
 	$T: typeid/[]$E,
 	#any_int count: int,
-	alignment := 0,
+	#any_int alignment := 0,
 	zeroed := true,
 ) -> (result: Scratch_Subbuffer(E), ok: bool) {
 	assert(count >= 0)
@@ -127,7 +127,7 @@ scratch_make :: proc(
 scratch_new :: proc(
 	scratch: ^Scratch_Buffer,
 	$T: typeid,
-	alignment := 0,
+	#any_int alignment := 0,
 	zeroed := true,
 ) -> (result: Scratch_Subbuffer(T), ok: bool) {
 	return scratch_make(scratch, []T, 1, alignment, zeroed)
@@ -137,7 +137,7 @@ scratch_new :: proc(
 scratch_new_clone :: proc(
 	scratch: ^Scratch_Buffer,
 	value: $T,
-	alignment := 0,
+	#any_int alignment := 0,
 ) -> (result: Scratch_Subbuffer(T), ok: bool) {
 	result = scratch_new(scratch, T, alignment, zeroed = false) or_return
 	result.data[0] = value
@@ -148,7 +148,7 @@ scratch_new_clone :: proc(
 scratch_slice_clone :: proc(
 	scratch: ^Scratch_Buffer,
 	src: []$E,
-	alignment := 0,
+	#any_int alignment := 0,
 ) -> (result: Scratch_Slice(E), ok: bool) {
 	result = scratch_make(scratch, []E, len(src), alignment, zeroed = false) or_return
 	copy(result.data, src)

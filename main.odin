@@ -71,8 +71,9 @@ main :: proc() {
 	}
 
 	window_set_cursor_state(window, .Disabled)
-	controls := default_controls()
+	perf := perf_make()
 	flycam := default_flycam()
+	controls := default_controls()
 	scene := Scene {
 		camera = {
 			transform = AFFINE_IDENTITY,
@@ -104,7 +105,19 @@ main :: proc() {
 		delta_time := f32(time.duration_seconds(time.tick_since(current_time)))
 		current_time = time.tick_now()
 
+		perf_start_frame(&perf)
 		poll_window_events(window)
+
+		if stats, ok := perf_collect_stats_after(&perf, 1.0); ok {
+			log.infof(
+				"FPS: %v, avg. frame time: %.02fms, median: %.02fms, low 1%%: %.02fms, low 0.1%%: %.02fms", 
+				int(stats.frames_per_second),
+				time.duration_milliseconds(stats.average_frame_time),
+				time.duration_milliseconds(stats.median_frame_time),
+				time.duration_milliseconds(stats.low_1pct_frame_time),
+				time.duration_milliseconds(stats.low_0_1pct_frame_time),
+			)
+		}
 
 		cursor_state := window_get_cursor_state(window)
 		if (.Just_Pressed in get_mouse_button(window, .Left) && cursor_state == .Normal) ||
@@ -134,6 +147,7 @@ main :: proc() {
 		free_all(context.temp_allocator)
 	}
 
+	perf_destroy(&perf)
 	scene_destroy(&scene)
 	renderer_destroy(&renderer)
 	window_destroy(window)
