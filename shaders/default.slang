@@ -1,4 +1,4 @@
-import mesh;
+import lib.mesh;
 
 static const float PI = 3.1415926535;
 

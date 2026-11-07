@@ -102,7 +102,7 @@ compile_shaders :: proc() {
 
 		run({
 			"slangc", src,
-			"-I", SHADER_LIB,
+			"-I", SHADER_SRC,
 			"-target", "spirv",
 			"-profile", "spirv_1_4",
 			"-emit-spirv-directly",

@@ -99,7 +99,8 @@ Push_Constants_Data :: struct {
 Frame_Data :: struct {
 	clear_color: [4]f32,
 	view: Scratch_Subbuffer(View_Data),
-	draws: Scratch_Subbuffer(Draw_Data),
+	indexed_draws: Scratch_Subbuffer(Draw_Data),
+	non_indexed_draws: Scratch_Subbuffer(Draw_Data),
 	lighting: Scratch_Subbuffer(Lighting_Data),
 	instances: Scratch_Subbuffer(Instance_Data),
 	indexed_commands: Scratch_Subbuffer(vk.DrawIndexedIndirectCommand),
@@ -120,11 +121,7 @@ Object_Id :: struct {
 Draw_Key :: distinct u64
 
 make_draw_key :: proc(pipeline: u16, indexed: bool, handle: Mesh_Handle) -> Draw_Key {
-	return Draw_Key(u64(pipeline << 33) | (u64(indexed) << 32) | u64(handle.idx))
-}
-
-draw_key_is_indexed :: proc(draw_key: Draw_Key) -> bool {
-	return (draw_key & (1 << 32)) != 0
+	return Draw_Key((u64(pipeline) << 33) | (u64(indexed) << 32) | u64(handle.idx))
 }
 
 @(require_results)
@@ -220,8 +217,8 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
-	meshes_destroy_pending(&r.meshes, frame_context)
-	upload_queue_retire(&r.upload_queue, frame_context)
+	meshes_destroy_pending(&r.meshes, frame_context.finished_timeline_value)
+	upload_queue_retire(&r.upload_queue, frame_context.finished_timeline_value)
 	upload_queue_flush(&r.upload_queue, r.device) or_return
 	frame_submit(
 		&r.frame_ring, 
@@ -334,7 +331,8 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 		}
 	})
 
-	draws := make([dynamic]Draw_Data, context.temp_allocator)
+	indexed_draws := make([dynamic]Draw_Data, context.temp_allocator)
+	non_indexed_draws := make([dynamic]Draw_Data, context.temp_allocator)
 	indexed_commands := make([dynamic]vk.DrawIndexedIndirectCommand, context.temp_allocator)
 	non_indexed_commands := make([dynamic]vk.DrawIndirectCommand, context.temp_allocator)
 	for i := 0; i < len(scratch_objects); {
@@ -344,30 +342,35 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 			i += 1
 		}
 
-		mesh_info, mesh_ok := meshes_get_info(&renderer.meshes, scratch_objects[i].mesh_handle)
+		instance_count := i - draw_start
+		mesh_info, mesh_ok := meshes_get_info(&renderer.meshes, scratch_objects[draw_start].mesh_handle)
 		assert(mesh_ok)
-		append(&draws, {
+		
+		draw := Draw_Data {
 			mesh_record_address = mesh_info.record_address,
 			instance_offset = u32(draw_start),
-		})
+		}
 		if mesh_info.index_count > 0 {
+			append(&indexed_draws, draw)
 			append(&indexed_commands, {
 				firstIndex = mesh_info.first_index,
 				indexCount = mesh_info.index_count,
-				instanceCount = u32(draw_start - i),
+				instanceCount = u32(instance_count),
 				vertexOffset = 0,
 				firstInstance = 0,
 			})
 		} else {
+			append(&non_indexed_draws, draw)
 			append(&non_indexed_commands, {
 				vertexCount = mesh_info.vertex_count,
-				instanceCount = u32(draw_start - i),
+				instanceCount = u32(instance_count),
 				firstVertex = 0,
 				firstInstance = 0,
 			})
 		}
 	}
-	data.draws = scratch_slice_clone(frame.scratch, draws[:]) or_return
+	data.indexed_draws = scratch_slice_clone(frame.scratch, indexed_draws[:]) or_return
+	data.non_indexed_draws = scratch_slice_clone(frame.scratch, non_indexed_draws[:]) or_return
 	data.indexed_commands = scratch_slice_clone(frame.scratch, indexed_commands[:]) or_return
 	data.non_indexed_commands = scratch_slice_clone(frame.scratch, non_indexed_commands[:]) or_return
 
@@ -493,33 +496,43 @@ record_draw_commands :: proc(
 	vk.CmdSetScissor(commands, 0, 1, &scissor)
 
 	constants := Push_Constants_Data {
-		instances_address = frame_data.instances.address,
 		view_address = frame_data.view.address,
 		lighting_address = frame_data.lighting.address,
+		instances_address = frame_data.instances.address,
 	}
-	vk.CmdPushConstants(
-		commands, renderer.pipeline_layout, {.VERTEX, .FRAGMENT}, 
-		0, size_of(constants), &constants,
-	)
 
 	descriptor_set := renderer.descriptor_set
 	vk.CmdBindPipeline(commands, .GRAPHICS, renderer.pipeline)
 	vk.CmdBindDescriptorSets(commands, .GRAPHICS, renderer.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
 	vk.CmdBindIndexBuffer(commands, meshes_get_index_buffer(renderer.meshes).handle, 0, .UINT32)
-	vk.CmdDrawIndexedIndirect(
-		commands, 
-		frame_data.indexed_commands.buffer_handle,
-		frame_data.indexed_commands.offset,
-		u32(len(frame_data.indexed_commands.data)),
-		size_of(vk.DrawIndexedIndirectCommand),
-	)
-	vk.CmdDrawIndirect(
-		commands,
-		frame_data.non_indexed_commands.buffer_handle,
-		frame_data.non_indexed_commands.offset,
-		u32(len(frame_data.non_indexed_commands.data)),
-		size_of(vk.DrawIndirectCommand),
-	)
+	if len(frame_data.indexed_commands.data) > 0 {
+		constants.draws_address = frame_data.indexed_draws.address
+		vk.CmdPushConstants(
+			commands, renderer.pipeline_layout, {.VERTEX, .FRAGMENT}, 
+			0, size_of(constants), &constants,
+		)
+		vk.CmdDrawIndexedIndirect(
+			commands, 
+			frame_data.indexed_commands.buffer_handle,
+			frame_data.indexed_commands.offset,
+			u32(len(frame_data.indexed_commands.data)),
+			size_of(vk.DrawIndexedIndirectCommand),
+		)
+	}
+	if len(frame_data.non_indexed_commands.data) > 0 {
+		constants.draws_address = frame_data.non_indexed_draws.address
+		vk.CmdPushConstants(
+			commands, renderer.pipeline_layout, {.VERTEX, .FRAGMENT}, 
+			0, size_of(constants), &constants,
+		)
+		vk.CmdDrawIndirect(
+			commands,
+			frame_data.non_indexed_commands.buffer_handle,
+			frame_data.non_indexed_commands.offset,
+			u32(len(frame_data.non_indexed_commands.data)),
+			size_of(vk.DrawIndirectCommand),
+		)
+	}
 	
 	vk.CmdEndRendering(commands)
 }

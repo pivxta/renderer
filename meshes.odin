@@ -82,6 +82,7 @@ meshes_destroy :: proc(meshes: ^Meshes, device: Device) {
 		return
 	}
 
+	meshes_destroy_pending(meshes, max(u64))
 	handle_map.dynamic_destroy(&meshes.handle_map)
 	queue.destroy(&meshes.pending_frees)
 	pool_destroy(&meshes.mesh_pool, device)
@@ -268,12 +269,12 @@ meshes_is_valid_handle :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> bool {
 	return handle_map.is_valid(&meshes.handle_map, handle)
 }
 
-meshes_destroy_pending :: proc(meshes: ^Meshes, frame_context: Frame_Context) {
+meshes_destroy_pending :: proc(meshes: ^Meshes, finished_value: u64) {
 	assert(meshes != nil)
 
 	for queue.len(meshes.pending_frees) > 0 {
 		pending_free := queue.front_ptr(&meshes.pending_frees)
-		if pending_free.retire_value <= frame_context.finished_timeline_value {
+		if pending_free.retire_value <= finished_value {
 			pool_free(&meshes.mesh_pool, &pending_free.record)
 			pool_free(&meshes.mesh_pool, &pending_free.data)
 			if indices, ok := pending_free.indices.?; ok {

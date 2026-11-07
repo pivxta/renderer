@@ -63,9 +63,9 @@ upload_queue_destroy :: proc(u: ^Upload_Queue, device: Device) {
 	u^ = {}
 }
 
-upload_queue_retire :: proc(u: ^Upload_Queue, frame: Frame_Context) {
+upload_queue_retire :: proc(u: ^Upload_Queue, finished_value: u64) {
 	assert(u != nil)
-	staging_retire(&u.staging, frame.finished_timeline_value)
+	staging_retire(&u.staging, finished_value)
 }
 
 @(require_results)

@@ -1,4 +1,5 @@
 package main
+import _ "core:log"
 import "core:slice"
 import "core:math/bits"
 import vk "vendor:vulkan"
@@ -98,15 +99,7 @@ pool_make :: proc(
 	assert(count >= 0)
 
 	if count == 0 {
-		return {
-			mapped = nil,
-			address = 0,
-			offset = 0,
-			size = 0,
-			buffer_usage = pool.buffer.usage,
-			buffer_handle = pool.buffer.handle,
-			buffer_allocation = pool.buffer.allocation,
-		}, true
+		return {}, true
 	}
 
 	size := Device_Size(size_of(E) * count)
@@ -162,7 +155,7 @@ pool_subbuffer_flush :: proc(
 
 	if offset > subbuffer.size {
 		log.errorf("Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)", 
-		           offset, buffer.size, location=location)
+		           offset, subbuffer.size, location=location)
 		return Buffer_Access_Error.Flush_Out_Of_Bounds
 	}
 	

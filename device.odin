@@ -300,7 +300,6 @@ check_device_features :: proc(
 	check(features.features.imageCubeArray, "imageCubeArray", name, &ok)
 	check(features.features.samplerAnisotropy, "samplerAnisotropy", name, &ok)
 	check(features.features.multiDrawIndirect, "multiDrawIndirect", name, &ok)
-	check(features.features.shaderInt16, "shaderInt16", name, &ok)
 	check(features.features.shaderInt64, "shaderInt64", name, &ok)
 	check(vk11.shaderDrawParameters, "shaderDrawParameters", name, &ok)
 	check(vk12.shaderInt8, "shaderInt8", name, &ok)
@@ -341,7 +340,6 @@ create_device_and_queues :: proc(d: ^Device) -> Device_Error {
 		imageCubeArray = true,
 		samplerAnisotropy = true,
 		multiDrawIndirect = true,
-		shaderInt16 = true,
 		shaderInt64 = true,
 	}
 

@@ -105,12 +105,7 @@ scratch_make :: proc(
 ) -> (result: Scratch_Subbuffer(E), ok: bool) {
 	assert(count >= 0)
 	if count == 0 {
-		return {
-			buffer_handle = scratch.buffer.handle,
-			address = 0,
-			offset = 0,
-			data = nil,
-		}, true
+		return {}, true
 	}
 
 	size := Device_Size(count * size_of(E))
