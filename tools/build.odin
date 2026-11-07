@@ -8,6 +8,7 @@ import "core:time"
 
 SHADER_SRC :: "shaders"
 SHADER_OUT :: "shaders/compiled"
+SHADER_LIB :: "shaders/lib"
 BUILD_OUT :: "build"
 PROGRAM_NAME :: "render"
 
@@ -83,6 +84,8 @@ compile_shaders :: proc() {
 		fmt.eprintfln("Failed to read directory '%s': %v", SHADER_SRC, err)
 	}
 
+	lib_time := newest_modification_time(SHADER_LIB)
+
 	for file in files {
 		if filepath.ext(file.name) != ".slang" {
 			continue
@@ -91,7 +94,7 @@ compile_shaders :: proc() {
 		src := fmt.tprintf("%s/%s", SHADER_SRC, file.name)
 		dst := fmt.tprintf("%s/%s.spv", SHADER_OUT, filepath.stem(file.name))
 
-		if !needs_rebuild(src, dst) {
+		if !needs_rebuild(src, dst, lib_time) {
 			continue
 		}
 
@@ -99,6 +102,7 @@ compile_shaders :: proc() {
 
 		run({
 			"slangc", src,
+			"-I", SHADER_LIB,
 			"-target", "spirv",
 			"-profile", "spirv_1_4",
 			"-emit-spirv-directly",
@@ -116,13 +120,30 @@ build_program :: proc() {
 	run({"odin", "build", ".", "-debug", "-vet", "-strict-style", "-disallow-do", "-warnings-as-errors", out_arg})
 }
 
-needs_rebuild :: proc(src, dst: string) -> bool {
+newest_modification_time :: proc(dir: string) -> (newest: time.Time) {
+	files, err := os.read_all_directory_by_path(dir, context.temp_allocator)
+	if err != nil {
+		return
+	}
+	for file in files {
+		if filepath.ext(file.name) != ".slang" {
+			continue
+		}
+		path := fmt.tprintf("%s/%s", dir, file.name)
+		if t, terr := os.modification_time_by_path(path); terr == nil && time.diff(newest, t) > 0 {
+			newest = t
+		}
+	}
+	return
+}
+
+needs_rebuild :: proc(src, dst: string, deps_time: time.Time) -> bool {
 	src_time, err1 := os.modification_time_by_path(src)
 	dst_time, err2 := os.modification_time_by_path(dst)
 	if err1 != nil || err2 != nil {
 		return true
 	}
-	return time.diff(dst_time, src_time) > 0
+	return time.diff(dst_time, src_time) > 0 || time.diff(dst_time, deps_time) > 0
 }
 
 run :: proc(command: []string, working_dir := "") {

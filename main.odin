@@ -74,26 +74,13 @@ main :: proc() {
 	perf := perf_make()
 	flycam := default_flycam()
 	controls := default_controls()
-	scene := Scene {
-		camera = {
-			transform = AFFINE_IDENTITY,
-			projection = Perspective_Projection {
-				near = 0.001,
-				far = 1000.0,
-			},
-		},
-		ambient_light = {
-			illuminance = 1.0,
-			color = {0.2, 0.7, 1.0},
-		},
-	}
-
+	scene: Scene
+	scene_init(&scene)
 	append(&scene.directional_lights, {
 		direction = {0.4, -1.0, 0.2},
 		color = {1.0, 1.0, 1.0},
 		illuminance = 2.0,
 	})
-
 	append(&scene.point_lights, {
 		position = {0.0, 0.0, 0.0},
 		color = {1.0, 1.0, 0.5},

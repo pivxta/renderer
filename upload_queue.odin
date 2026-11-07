@@ -76,85 +76,235 @@ upload_queue_flush :: proc(u: ^Upload_Queue, device: Device) -> (err: Buffer_Err
 }
 
 @(require_results)
+upload_buffer_reserve :: proc(
+	uqueue: ^Upload_Queue,
+	frame_ring: Frame_Ring,
+	buffer: Buffer, 
+	size: Maybe(int) = nil,
+	usage: Maybe(Resource_Usage) = nil,
+	offset: Device_Size = 0,
+) -> (bytes: []byte, ok: bool) {
+	assert(uqueue != nil)
+
+	assert(buffer.size >= offset)
+	staging_size: Device_Size
+	if size == nil {
+		staging_size = buffer.size - offset
+	} else {
+		staging_size = Device_Size(size.?)
+	}
+
+	assert(.TRANSFER_DST in buffer.usage)
+	assert(buffer.size >= offset + staging_size)
+	if staging_size == 0 {
+		return nil, true
+	}
+
+	buffer_usage: Resource_Usage
+	if usage == nil {
+		buffer_usage = resource_usage_from_buffer_usage(buffer.usage)
+	} else {
+		buffer_usage = usage.?
+	}
+
+	staging := staging_make(&uqueue.staging, frame_ring, []u8, staging_size) or_return
+
+	queue.enqueue(&uqueue.pending, Buffer_Upload {
+		buffer = buffer.handle,
+		usage = buffer_usage,
+		offset = offset,
+		staging = staging,
+	})
+
+	return staging.data, true
+}
+
+@(require_results)
 upload_buffer :: proc(
-	u: ^Upload_Queue, 
+	uqueue: ^Upload_Queue, 
 	frame_ring: Frame_Ring,
 	buffer: Buffer, 
 	bytes: []byte,
-	usage: Resource_Usage,
+	usage: Maybe(Resource_Usage) = nil,
 	offset: Device_Size = 0,
 ) -> (ok: bool) {
-	assert(u != nil)
-	assert(buffer.size >= offset + Device_Size(slice.size(bytes)))
+	staging := upload_buffer_reserve(
+		uqueue, frame_ring, 
+		buffer, len(bytes), 
+		usage, offset,
+	) or_return
 
-	if len(bytes) == 0 {
-		return
-	}
-
-	queue.enqueue(&u.pending, Buffer_Upload {
-		buffer = buffer.handle,
-		usage = usage,
-		offset = offset,
-		staging = staging_slice_clone(&u.staging, frame_ring, bytes) or_return,
-	})
+	copy(staging, bytes)
 
 	return true	
 }
 
 @(require_results)
+upload_subbuffer_reserve :: proc(
+	uqueue: ^Upload_Queue, 
+	frame_ring: Frame_Ring,
+	buffer: Pool_Subbuffer($T), 
+	count: Maybe(int) = nil,
+	usage: Maybe(Resource_Usage) = nil,
+	offset: Device_Size = 0,
+) -> (values: []T, ok: bool) {
+	assert(uqueue != nil)
+
+	assert(buffer.size >= offset)
+	staging_size: Device_Size
+	if count == nil {
+		staging_size = buffer.size - offset
+	} else {
+		staging_size = Device_Size(count.? * size_of(T))
+	}
+
+	assert(.TRANSFER_DST in buffer.buffer_usage)
+	assert(buffer.size >= offset + staging_size)
+	if staging_size == 0 {
+		return nil, true
+	}
+
+	buffer_usage: Resource_Usage
+	if usage == nil {
+		buffer_usage = resource_usage_from_buffer_usage(buffer.buffer_usage)
+	} else {
+		buffer_usage = usage.?
+	}
+
+	staging := staging_make(&uqueue.staging, frame_ring, []u8, staging_size) or_return
+
+	queue.enqueue(&uqueue.pending, Buffer_Upload {
+		buffer = buffer.buffer_handle,
+		offset = buffer.offset + offset,
+		usage = buffer_usage,
+		staging = staging,
+	})
+
+	return slice.reinterpret([]T, staging.data), true
+}
+
+@(require_results)
 upload_subbuffer :: proc(
-	u: ^Upload_Queue, 
+	uqueue: ^Upload_Queue, 
 	frame_ring: Frame_Ring,
 	buffer: Pool_Subbuffer($T), 
 	values: []T,
-	usage: Resource_Usage,
+	usage: Maybe(Resource_Usage) = nil,
 	offset: Device_Size = 0,
 ) -> (ok: bool) {
-	assert(u != nil)
-	assert(buffer.size >= offset + Device_Size(slice.size(values)))
+	staging := upload_subbuffer_reserve(
+		uqueue, frame_ring, 
+		buffer, len(values), 
+		usage, offset,
+	) or_return
 
-	if len(values) == 0 {
-		return
-	}
-
-	bytes := slice.reinterpret([]u8, values)
-	queue.enqueue(&u.pending, Buffer_Upload {
-		buffer = buffer.buffer_handle,
-		offset = buffer.offset + offset,
-		usage = usage,
-		staging = staging_slice_clone(&u.staging, frame_ring, bytes) or_return,
-	})
+	copy(staging, values)
 
 	return true	
 }
 
 @(require_results)
 upload_texture :: proc(
-	u: ^Upload_Queue, 
+	uqueue: ^Upload_Queue, 
 	frame_ring: Frame_Ring,
 	texture: Texture, 
 	image: Image,
-	usage: Resource_Usage,
+	usage: Maybe(Resource_Usage) = nil,
 	layer: int = 0,
 ) -> (ok: bool) {
-	assert(u != nil)
+	assert(uqueue != nil)
+
 	assert(image_is_valid(image))
 	assert(image_format_matches_vk(image.format, texture.format))
+
 	assert(texture.extent.depth == 1)
 	assert(texture.extent.width == u32(image.width))
 	assert(texture.extent.height == u32(image.height))
 	assert(layer >= 0 && layer < int(texture.array_layers))
 	assert(.TRANSFER_DST in texture.usage)
+	
+	texture_usage: Resource_Usage
+	if usage == nil {
+		texture_usage = resource_usage_from_texture_usage(texture.usage)
+	} else {
+		texture_usage = usage.?
+	}
 
-	staging := staging_slice_clone(&u.staging, frame_ring, image.bytes) or_return
-	queue.enqueue(&u.pending, Texture_Upload{
+	staging := staging_slice_clone(&uqueue.staging, frame_ring, image.bytes) or_return
+	queue.enqueue(&uqueue.pending, Texture_Upload{
 		texture = texture,
-		usage = usage,
+		usage = texture_usage,
 		staging = staging,
 		layer = u32(layer),
 	})
 
 	return true	
+}
+
+ALL_SHADER_STAGES :: vk.PipelineStageFlags2 {
+	.PRE_RASTERIZATION_SHADERS,
+	.FRAGMENT_SHADER,
+	.COMPUTE_SHADER,
+}
+
+resource_usage_from_buffer_usage :: proc(usage: vk.BufferUsageFlags) -> (r: Resource_Usage) {
+	if .VERTEX_BUFFER in usage {
+		r.stages += {.VERTEX_ATTRIBUTE_INPUT}
+		r.access += {.VERTEX_ATTRIBUTE_READ}
+	}
+	if .INDEX_BUFFER in usage {
+		r.stages += {.INDEX_INPUT}
+		r.access += {.INDEX_READ}
+	}
+	if .INDIRECT_BUFFER in usage {
+		r.stages += {.DRAW_INDIRECT}
+		r.access += {.INDIRECT_COMMAND_READ}
+	}
+	if .UNIFORM_BUFFER in usage {
+		r.stages += ALL_SHADER_STAGES
+		r.access += {.UNIFORM_READ}
+	}
+	if .UNIFORM_TEXEL_BUFFER in usage {
+		r.stages += ALL_SHADER_STAGES
+		r.access += {.SHADER_SAMPLED_READ}
+	}
+	if usage & {.STORAGE_BUFFER, .STORAGE_TEXEL_BUFFER, .SHADER_DEVICE_ADDRESS} != {} {
+		r.stages += ALL_SHADER_STAGES
+		r.access += {.SHADER_STORAGE_READ}
+	}
+	if .TRANSFER_SRC in usage {
+		r.stages += {.COPY}
+		r.access += {.TRANSFER_READ}
+	}
+	if .TRANSFER_DST in usage {
+		r.stages += {.COPY}
+		r.access += {.TRANSFER_WRITE}
+	}
+	r.layout = .UNDEFINED
+	return
+}
+
+resource_usage_from_texture_usage :: proc(usage: vk.ImageUsageFlags) -> (r: Resource_Usage) {
+	if .SAMPLED in usage {
+		r.stages += ALL_SHADER_STAGES
+		r.access += {.SHADER_SAMPLED_READ}
+	}
+	if .STORAGE in usage {
+		r.stages += ALL_SHADER_STAGES
+		r.access += {.SHADER_STORAGE_READ, .SHADER_STORAGE_WRITE}
+	}
+	if .TRANSFER_SRC in usage {
+		r.stages += {.COPY, .BLIT}
+		r.access += {.TRANSFER_READ}
+	}
+
+	switch {
+	case .STORAGE in usage:      r.layout = .GENERAL
+	case .SAMPLED in usage:      r.layout = .SHADER_READ_ONLY_OPTIMAL
+	case .TRANSFER_SRC in usage: r.layout = .TRANSFER_SRC_OPTIMAL
+	case:                        r.layout = .GENERAL
+	}
+	return
 }
 
 upload_queue_record_commands :: proc(u: ^Upload_Queue, commands: vk.CommandBuffer) {
@@ -206,7 +356,7 @@ get_texture_pre_barrier :: proc(
 	append(barriers, {
 		sType = .IMAGE_MEMORY_BARRIER_2,
 		image = upload.texture.handle,
-		srcStageMask = {},
+		srcStageMask = upload.usage.stages,
 		srcAccessMask = {},
 		dstStageMask = {.TRANSFER},
 		dstAccessMask = {.TRANSFER_WRITE},

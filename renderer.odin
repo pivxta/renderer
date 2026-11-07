@@ -1,11 +1,16 @@
 package main
 import "core:log"
-import _ "core:image/jpeg"
-import _ "core:image/png"
+import "core:sort"
+import "core:mem"
+import "core:mem/virtual"
+import "base:runtime"
 import vk "vendor:vulkan"
 
 STAGING_CAPACITY :: 128 * 1024 * 1024
 SCRATCH_CAPACITY :: 16 * 1024 * 1024
+MESH_POOL_CAPACITY :: 128 * 1024 * 1024
+INDEX_POOL_CAPACITY :: 128 * 1024 * 1024
+ARENA_CAPACITY :: 128 * mem.Megabyte
 
 Renderer :: struct {
 	instance: Instance,
@@ -13,7 +18,8 @@ Renderer :: struct {
 	surface: Surface,
 	frame_ring: Frame_Ring,
 	upload_queue: Upload_Queue,
-	mesh_pool: Pool_Buffer,
+	meshes: Meshes,
+	arena: virtual.Arena,
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline: vk.Pipeline,
@@ -23,9 +29,6 @@ Renderer :: struct {
 	descriptor_pool: vk.DescriptorPool,
 	descriptor_set_layout: vk.DescriptorSetLayout,
 	descriptor_set: vk.DescriptorSet,
-
-	vertex_buffer: Pool_Subbuffer(Vertex_Data),
-	instance_buffer: Pool_Subbuffer(Instance_Data),
 
 	texture: Texture,
 	sampler: vk.Sampler,
@@ -46,6 +49,7 @@ Renderer_Error :: union #shared_nil {
 	Renderer_Draw_Error,
 	Texture_Error,
 	Buffer_Error,
+	runtime.Allocator_Error,
 	vk.Result,
 }
 
@@ -87,14 +91,40 @@ Lighting_Data :: struct {
 
 Push_Constants_Data :: struct {
 	view_address: Device_Address,
+	draws_address: Device_Address,
 	instances_address: Device_Address,
-	vertices_address: Device_Address,
 	lighting_address: Device_Address,
 }
 
 Frame_Data :: struct {
+	clear_color: [4]f32,
 	view: Scratch_Subbuffer(View_Data),
+	draws: Scratch_Subbuffer(Draw_Data),
 	lighting: Scratch_Subbuffer(Lighting_Data),
+	instances: Scratch_Subbuffer(Instance_Data),
+	indexed_commands: Scratch_Subbuffer(vk.DrawIndexedIndirectCommand),
+	non_indexed_commands: Scratch_Subbuffer(vk.DrawIndirectCommand),
+}
+
+Draw_Data :: struct {
+	mesh_record_address: Device_Address,
+	instance_offset: u32,
+}
+
+Object_Id :: struct {
+	draw_key: Draw_Key,
+	mesh_handle: Mesh_Handle,
+	object_index: int,
+}
+
+Draw_Key :: distinct u64
+
+make_draw_key :: proc(pipeline: u16, indexed: bool, handle: Mesh_Handle) -> Draw_Key {
+	return Draw_Key(u64(pipeline << 33) | (u64(indexed) << 32) | u64(handle.idx))
+}
+
+draw_key_is_indexed :: proc(draw_key: Draw_Key) -> bool {
+	return (draw_key & (1 << 32)) != 0
 }
 
 @(require_results)
@@ -105,28 +135,19 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 		renderer_destroy(r)	
 	}
 
+	virtual.arena_init_static(&r.arena, reserved = ARENA_CAPACITY) or_return
 	instance_init(&r.instance) or_return
 	surface_init(&r.surface, r.instance, window) or_return
 	device_init(&r.device, r.instance, r.surface) or_return
 	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
 	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
-	pool_init(
-		&r.mesh_pool, r.device,
-		capacity = 1 * 1024 * 1024,
-		buffer_usage = {
-			.TRANSFER_DST,
-			.STORAGE_BUFFER, 
-			.INDEX_BUFFER, 
-			.SHADER_DEVICE_ADDRESS,
-		},
-	) or_return
+	meshes_init(&r.meshes, r.device, MESH_POOL_CAPACITY, INDEX_POOL_CAPACITY) or_return
 
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
 	create_descriptor_sets(r) or_return
 	create_pipeline_layout(r) or_return
 	create_pipeline(r) or_return
-	create_buffers(r) or_return
 	load_textures(r) or_return
 
 	return nil
@@ -141,24 +162,36 @@ renderer_destroy :: proc (r: ^Renderer) {
 		_ = vk.DeviceWaitIdle(r.device.logical)
 	}
 	destroy_textures(r)
-	destroy_buffers(r)
 	destroy_pipeline(r)
 	destroy_pipeline_layout(r)
 	destroy_descriptor_sets(r)
 	destroy_depth_texture(r)
-	pool_destroy(&r.mesh_pool, r.device)
+
+	meshes_destroy(&r.meshes, r.device)
 	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
 	surface_destroy(&r.surface, r.instance, r.device)
 	device_destroy(&r.device)
 	instance_destroy(&r.instance)
+	virtual.arena_destroy(&r.arena)
 	r^ = {}
+}
+
+renderer_add_mesh :: proc (r: ^Renderer, mesh: Mesh) -> (Mesh_Handle, Mesh_Error) {
+	return meshes_add(&r.meshes, &r.upload_queue, r.frame_ring, mesh)
+}
+
+renderer_destroy_mesh :: proc (r: ^Renderer, handle: Mesh_Handle) {
+	meshes_remove(&r.meshes, r.frame_ring, handle)
 }
 
 @(require_results)
 renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
+	free_all(virtual.arena_allocator(&r.arena))
+	context.temp_allocator = virtual.arena_allocator(&r.arena)
+
 	frame_context := frame_begin(&r.frame_ring, r.device) or_return
-	frame_data, ok := write_frame_data(r^, frame_context, scene)
+	frame_data, ok := write_frame_data(r, frame_context, scene)
 	if !ok {
 		return Renderer_Draw_Error.Out_Of_Scratch_Memory
 	}
@@ -187,6 +220,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
+	meshes_destroy_pending(&r.meshes, frame_context)
 	upload_queue_retire(&r.upload_queue, frame_context)
 	upload_queue_flush(&r.upload_queue, r.device) or_return
 	frame_submit(
@@ -228,7 +262,7 @@ reconfigure_targets :: proc(r: ^Renderer) -> Renderer_Error {
 }
 
 @(require_results)
-write_frame_data :: proc(renderer: Renderer, frame: Frame_Context, scene: Scene) -> (
+write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene) -> (
 	data: Frame_Data, 
 	ok: bool,
 ) {
@@ -278,6 +312,74 @@ write_frame_data :: proc(renderer: Renderer, frame: Frame_Context, scene: Scene)
 	}
 	data.lighting = scratch_new_clone(frame.scratch, lighting) or_return
 
+	scratch_objects := make([dynamic]Object_Id, 0, len(scene.mesh_objects), context.temp_allocator)
+	for mesh_object, index in scene.mesh_objects {
+		if meshes_is_valid_handle(&renderer.meshes, mesh_object.mesh) {
+			pipeline := u16(0)
+			indexed := meshes_is_indexed(&renderer.meshes, mesh_object.mesh)
+			draw_key := make_draw_key(pipeline, indexed, mesh_object.mesh)
+			append(&scratch_objects, {
+				draw_key = draw_key,
+				mesh_handle = mesh_object.mesh,
+				object_index = index,
+			})
+		}
+	}
+	
+	sort.quick_sort_proc(scratch_objects[:], proc(a, b: Object_Id) -> int {
+		switch {
+		case a.draw_key > b.draw_key: return 1
+		case a.draw_key < b.draw_key: return -1
+		case: return 0
+		}
+	})
+
+	draws := make([dynamic]Draw_Data, context.temp_allocator)
+	indexed_commands := make([dynamic]vk.DrawIndexedIndirectCommand, context.temp_allocator)
+	non_indexed_commands := make([dynamic]vk.DrawIndirectCommand, context.temp_allocator)
+	for i := 0; i < len(scratch_objects); {
+		draw_start := i
+		draw_key := scratch_objects[i].draw_key
+		for i < len(scratch_objects) && scratch_objects[i].draw_key == draw_key {
+			i += 1
+		}
+
+		mesh_info, mesh_ok := meshes_get_info(&renderer.meshes, scratch_objects[i].mesh_handle)
+		assert(mesh_ok)
+		append(&draws, {
+			mesh_record_address = mesh_info.record_address,
+			instance_offset = u32(draw_start),
+		})
+		if mesh_info.index_count > 0 {
+			append(&indexed_commands, {
+				firstIndex = mesh_info.first_index,
+				indexCount = mesh_info.index_count,
+				instanceCount = u32(draw_start - i),
+				vertexOffset = 0,
+				firstInstance = 0,
+			})
+		} else {
+			append(&non_indexed_commands, {
+				vertexCount = mesh_info.vertex_count,
+				instanceCount = u32(draw_start - i),
+				firstVertex = 0,
+				firstInstance = 0,
+			})
+		}
+	}
+	data.draws = scratch_slice_clone(frame.scratch, draws[:]) or_return
+	data.indexed_commands = scratch_slice_clone(frame.scratch, indexed_commands[:]) or_return
+	data.non_indexed_commands = scratch_slice_clone(frame.scratch, non_indexed_commands[:]) or_return
+
+	data.instances = scratch_make(frame.scratch, []Instance_Data, len(scratch_objects)) or_return
+	for scratch_object, i in scratch_objects {
+		object := scene.mesh_objects[scratch_object.object_index]	
+		data.instances.data[i] = Instance_Data {
+			object_to_world = affine_to_matrix3x4(object.transform),
+		}
+	}
+
+	data.clear_color = scene.clear_color
 	return data, true
 }
 
@@ -346,11 +448,7 @@ record_draw_commands :: proc(
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		storeOp = .STORE,
 		loadOp = .CLEAR,
-		clearValue = {
-			color = {
-				float32 = {0.2, 0.7, 1.0, 1.0},
-			},
-		},
+		clearValue = {color = {float32 = frame_data.clear_color}},
 	}
 	depth_attachment_info := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
@@ -395,8 +493,7 @@ record_draw_commands :: proc(
 	vk.CmdSetScissor(commands, 0, 1, &scissor)
 
 	constants := Push_Constants_Data {
-		instances_address = renderer.instance_buffer.address,
-		vertices_address = renderer.vertex_buffer.address,
+		instances_address = frame_data.instances.address,
 		view_address = frame_data.view.address,
 		lighting_address = frame_data.lighting.address,
 	}
@@ -408,10 +505,21 @@ record_draw_commands :: proc(
 	descriptor_set := renderer.descriptor_set
 	vk.CmdBindPipeline(commands, .GRAPHICS, renderer.pipeline)
 	vk.CmdBindDescriptorSets(commands, .GRAPHICS, renderer.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
-	vk.CmdDraw(commands, 
-	           u32(renderer.vertex_buffer.size) / size_of(Vertex_Data),
-	           u32(renderer.instance_buffer.size) / size_of(Instance_Data), 
-	    	   0, 0)
+	vk.CmdBindIndexBuffer(commands, meshes_get_index_buffer(renderer.meshes).handle, 0, .UINT32)
+	vk.CmdDrawIndexedIndirect(
+		commands, 
+		frame_data.indexed_commands.buffer_handle,
+		frame_data.indexed_commands.offset,
+		u32(len(frame_data.indexed_commands.data)),
+		size_of(vk.DrawIndexedIndirectCommand),
+	)
+	vk.CmdDrawIndirect(
+		commands,
+		frame_data.non_indexed_commands.buffer_handle,
+		frame_data.non_indexed_commands.offset,
+		u32(len(frame_data.non_indexed_commands.data)),
+		size_of(vk.DrawIndirectCommand),
+	)
 	
 	vk.CmdEndRendering(commands)
 }
@@ -500,6 +608,7 @@ destroy_textures :: proc(r: ^Renderer) {
 }
 
 
+/*
 @(require_results)
 create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
 	vertices := []Vertex_Data {
@@ -609,6 +718,7 @@ destroy_buffers :: proc(r: ^Renderer) {
 	pool_free(&r.mesh_pool, &r.instance_buffer)
 	pool_free(&r.mesh_pool, &r.vertex_buffer)
 }
+*/
 
 @(require_results)
 create_depth_texture :: proc(r: ^Renderer) -> Texture_Error {

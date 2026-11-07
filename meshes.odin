@@ -1,0 +1,287 @@
+package main
+
+import "core:container/handle_map"
+import "core:container/queue"
+
+Meshes :: struct {
+	mesh_pool: Pool_Buffer,
+	index_pool: Pool_Buffer,
+	handle_map: handle_map.Dynamic_Handle_Map(Mesh_Slot, Mesh_Handle),	
+	pending_frees: queue.Queue(Pending_Free),
+}
+
+Mesh_Info :: struct {
+	first_index: u32,
+	index_count: u32,
+	vertex_count: u32,
+	attributes: Vertex_Attribute_Set,
+	record_address: Device_Address,
+}
+
+Mesh_Record_Data :: struct {
+	data_address: Device_Address,
+	data_offsets: [Vertex_Attribute]u32,
+	encodings: [Vertex_Attribute]u8,
+	divisors: [Vertex_Attribute]u32,
+	attributes: Vertex_Attribute_Set,
+	vertex_count: u32,
+}
+
+Mesh_Slot :: struct {
+	handle: Mesh_Handle,
+	index_count: u32,
+	vertex_count: u32,
+	attributes: Vertex_Attribute_Set,
+	indices: Maybe(Pool_Subbuffer(u32)),
+	record: Pool_Subbuffer(Mesh_Record_Data),
+	data: Pool_Subbuffer(byte),
+}
+
+@(private="file")
+Pending_Free :: struct {
+	retire_value: u64,
+	indices: Maybe(Pool_Subbuffer(u32)),
+	record: Pool_Subbuffer(Mesh_Record_Data),
+	data: Pool_Subbuffer(byte),
+}
+
+@(require_results)
+meshes_init :: proc(
+	meshes: ^Meshes,
+	device: Device, 
+	mesh_pool_capacity: Device_Size, 
+	index_pool_capacity: Device_Size,
+	allocator := context.allocator,
+) -> (err: Buffer_Error) {
+	assert(meshes != nil)
+	
+	meshes^ = {}
+	defer if err != nil {
+		meshes_destroy(meshes, device)
+	}
+
+	pool_init(
+		&meshes.mesh_pool, device,
+		capacity = mesh_pool_capacity,
+		buffer_usage = {.STORAGE_BUFFER, .TRANSFER_DST, .SHADER_DEVICE_ADDRESS},
+	) or_return
+
+	pool_init(
+		&meshes.index_pool, device,
+		capacity = index_pool_capacity,
+		buffer_usage = {.INDEX_BUFFER, .TRANSFER_DST},
+	) or_return
+
+	handle_map.dynamic_init(&meshes.handle_map, allocator)
+	queue.init(&meshes.pending_frees, queue.DEFAULT_CAPACITY, allocator)
+	return
+}
+
+meshes_destroy :: proc(meshes: ^Meshes, device: Device) {
+	if meshes == nil {
+		return
+	}
+
+	handle_map.dynamic_destroy(&meshes.handle_map)
+	queue.destroy(&meshes.pending_frees)
+	pool_destroy(&meshes.mesh_pool, device)
+	pool_destroy(&meshes.index_pool, device)
+	meshes^ = {}
+}
+
+@(require_results)
+meshes_add :: proc(
+	meshes: ^Meshes, 
+	upload_queue: ^Upload_Queue,
+	frame_ring: Frame_Ring,
+	mesh: Mesh,
+) -> (handle: Mesh_Handle, err: Mesh_Error) {
+	assert(meshes != nil)
+	mesh_validate(mesh) or_return
+
+	// Allocate mesh subbuffers
+	size := 0
+	for _, attribute in mesh.attributes {
+		size += mesh_attribute_size(mesh, attribute)
+	}
+
+	data, data_ok := pool_make(&meshes.mesh_pool, []u8, size)
+	if !data_ok {
+		return {}, .Out_Of_Gpu_Memory
+	}
+
+	record, record_ok := pool_new(&meshes.mesh_pool, Mesh_Record_Data)
+	if !record_ok {
+		pool_free(&meshes.mesh_pool, &data)
+		return {}, .Out_Of_Gpu_Memory
+	}
+
+	index_count := 0
+	indices: Maybe(Pool_Subbuffer(u32))
+	if mesh.indices != nil {
+		switch indices in mesh.indices {
+		case []u16:
+			index_count = len(indices)
+		case []u32:
+			index_count = len(indices)
+		}
+
+		indices_ok: bool
+		indices, indices_ok = pool_make(&meshes.index_pool, []u32, index_count, alignment=size_of(u32))
+		if !indices_ok {
+			pool_free(&meshes.mesh_pool, &record)
+			pool_free(&meshes.mesh_pool, &data)
+			return {}, .Out_Of_Gpu_Memory
+		}
+	}
+
+	// Create mesh handle and store slot
+	attributes := mesh_attribute_set(mesh)
+	handle = handle_map.add(&meshes.handle_map, Mesh_Slot {
+		index_count = u32(index_count),
+		vertex_count = u32(mesh.vertex_count),
+		attributes = attributes,
+		indices = indices,
+		record = record,
+		data = data,
+	})
+	defer if err != nil {
+		meshes_remove(meshes, frame_ring, handle)
+		handle = {}
+	}
+
+	// Upload data
+	if mesh.indices != nil {
+		staging_indices, staging_indices_ok := upload_subbuffer_reserve(
+			upload_queue, 
+			frame_ring, 
+			indices.?,
+		)
+		if !staging_indices_ok {
+			err = .Out_Of_Staging_Memory
+			return
+		}
+		
+		switch indices in mesh.indices {
+		case []u16:
+			for index, i in indices {
+				staging_indices[i] = u32(index)
+			}
+		case []u32:
+			copy(staging_indices, indices)
+		}
+	}
+
+	staging_data, staging_data_ok := upload_subbuffer_reserve(
+		upload_queue, 
+		frame_ring,
+		data,
+	)
+	if !staging_data_ok {
+		err = .Out_Of_Staging_Memory
+		return
+	}
+	
+	offset := 0
+	data_offsets := [Vertex_Attribute]u32 {}
+	data_encodings := [Vertex_Attribute]u8 {}
+	data_divisors := [Vertex_Attribute]u32 {}
+	for attribute_data, attribute in mesh.attributes {
+		attribute_data := attribute_data.? or_continue
+		data_offsets[attribute] = u32(offset)
+		data_encodings[attribute] = u8(attribute_data.encoding)
+		data_divisors[attribute] = u32(1 if attribute_data.divisor == nil else attribute_data.divisor.?)
+		attribute_size := mesh_attribute_size(mesh, attribute)
+		copy(staging_data[offset:], attribute_data.data[:attribute_size])
+		offset += attribute_size
+	}
+
+	staging_record, staging_record_ok := upload_subbuffer_reserve(
+		upload_queue,
+		frame_ring,
+		record,
+	)
+	if !staging_record_ok {
+		err = .Out_Of_Staging_Memory
+		return
+	}
+	staging_record[0] = {
+		data_address = data.address,
+		data_offsets = data_offsets,
+		encodings = data_encodings,
+		divisors = data_divisors,
+		attributes = attributes,
+		vertex_count = u32(mesh.vertex_count),
+	}
+	
+	return handle, nil
+}
+
+meshes_remove :: proc(meshes: ^Meshes, frame_ring: Frame_Ring, handle: Mesh_Handle) {
+	assert(meshes != nil)
+
+	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok {
+		queue.enqueue(&meshes.pending_frees, {
+			retire_value = frame_ring.timeline_value + 1,
+			indices = slot.indices,
+			record = slot.record,
+			data = slot.data,
+		})
+		handle_map.remove(&meshes.handle_map, handle)
+	}
+}
+
+@(require_results)
+meshes_get_index_buffer :: proc(meshes: Meshes) -> Buffer {
+	return meshes.index_pool.buffer
+}
+
+@(require_results)
+meshes_get_info :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> (Mesh_Info, bool) {
+	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok {
+		first_index := u32(0)
+		if indices, indices_ok := slot.indices.?; indices_ok {
+			assert(indices.offset % size_of(u32) == 0)
+			first_index = u32(indices.offset / size_of(u32))
+		}
+		return {
+			first_index = first_index,
+			index_count = slot.index_count,
+			vertex_count = slot.vertex_count,
+			attributes = slot.attributes,
+			record_address = slot.record.address,
+		}, true
+	}
+	return {}, false
+}
+
+@(require_results)
+meshes_is_indexed :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> bool {
+	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok {
+		return slot.indices != nil
+	}
+	return false
+}
+
+@(require_results)
+meshes_is_valid_handle :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> bool {
+	return handle_map.is_valid(&meshes.handle_map, handle)
+}
+
+meshes_destroy_pending :: proc(meshes: ^Meshes, frame_context: Frame_Context) {
+	assert(meshes != nil)
+
+	for queue.len(meshes.pending_frees) > 0 {
+		pending_free := queue.front_ptr(&meshes.pending_frees)
+		if pending_free.retire_value <= frame_context.finished_timeline_value {
+			pool_free(&meshes.mesh_pool, &pending_free.record)
+			pool_free(&meshes.mesh_pool, &pending_free.data)
+			if indices, ok := pending_free.indices.?; ok {
+				pool_free(&meshes.index_pool, &indices)
+			}
+			queue.dequeue(&meshes.pending_frees)
+		} else {
+			break	
+		}
+	}
+}

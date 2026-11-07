@@ -4,12 +4,16 @@ import "core:math/bits"
 import vk "vendor:vulkan"
 import "third_party/vma"
 
+POOL_DEFAULT_ALIGNMENT :: 16
+
 Pool_Subbuffer :: struct($T: typeid) {
 	mapped: []T,
 	address: Device_Address,
 	offset: Device_Size,
 	size: Device_Size,
+	buffer_usage: vk.BufferUsageFlags,
 	buffer_handle: vk.Buffer,
+	buffer_allocation: vma.Allocation,
 	allocation_handle: vma.VirtualAllocation,
 } 
 
@@ -35,7 +39,13 @@ pool_init :: proc(
 		pool_destroy(pool, device)
 	}
 
-	buffer_init(&pool.buffer, device, capacity, buffer_usage, memory_usage, memory_flags) or_return
+	buffer_init(
+		&pool.buffer, device, 
+		capacity, buffer_usage, 
+		memory_usage, memory_flags, 
+		location,
+	) or_return
+
 	vma.CreateVirtualBlock({size = capacity}, &pool.block) or_return
 	return nil
 }
@@ -82,13 +92,21 @@ pool_make :: proc(
 	pool: ^Pool_Buffer, 
 	$T: typeid/[]$E, 
 	#any_int count: int,
-	#any_int alignment := 0,
+	#any_int alignment := POOL_DEFAULT_ALIGNMENT,
 ) -> (Pool_Subbuffer(E), bool) {
 	assert(pool != nil)
 	assert(count >= 0)
 
 	if count == 0 {
-		return {}, true
+		return {
+			mapped = nil,
+			address = 0,
+			offset = 0,
+			size = 0,
+			buffer_usage = pool.buffer.usage,
+			buffer_handle = pool.buffer.handle,
+			buffer_allocation = pool.buffer.allocation,
+		}, true
 	}
 
 	size := Device_Size(size_of(E) * count)
@@ -105,8 +123,10 @@ pool_make :: proc(
 		address = address,
 		offset = offset,
 		size = size,
-		allocation_handle = allocation,
+		buffer_usage = pool.buffer.usage,
 		buffer_handle = pool.buffer.handle,
+		buffer_allocation = pool.buffer.allocation,
+		allocation_handle = allocation,
 	}, true
 }
 
@@ -114,7 +134,7 @@ pool_make :: proc(
 pool_new :: proc(
 	pool: ^Pool_Buffer, 
 	$T: typeid, 
-	#any_int alignment := 0,
+	#any_int alignment := POOL_DEFAULT_ALIGNMENT,
 ) -> (Pool_Subbuffer(T), bool) {
 	return pool_make(pool, []T, 1, alignment)
 }
@@ -132,9 +152,33 @@ pool_free :: proc(pool: ^Pool_Buffer, subbuffer: ^Pool_Subbuffer($E)) {
 
 @(require_results)
 pool_subbuffer_flush :: proc(
-	subbuffer: ^Pool_Subbuffer, 
+	subbuffer: ^Pool_Subbuffer($T), 
 	device: Device, 
 	#any_int offset: Device_Size = 0,
 	#any_int size: Device_Size = 0,
+	location := #caller_location,
 ) -> Buffer_Error {
+	assert(subbuffer != nil, location)
+
+	if offset > subbuffer.size {
+		log.errorf("Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)", 
+		           offset, buffer.size, location=location)
+		return Buffer_Access_Error.Flush_Out_Of_Bounds
+	}
+	
+	flush_size: Device_Size
+	if size == 0 {
+		flush_size = subbuffer.size - offset
+	} else {
+		flush_size = min(size, subbuffer.size - offset)
+	}
+
+	vma.FlushAllocation(
+		device.allocator, 
+		subbuffer.buffer_allocation,
+		subbuffer.offset + offset, 
+		flush_size,
+	) or_return
+
+	return nil
 }

@@ -96,7 +96,11 @@ staging_make :: proc(
 ) -> (result: Staging_Subbuffer(E), ok: bool) {
 	assert(count >= 0)
 	if count == 0 {
-		return {}, true
+		return {
+			buffer_handle = staging.buffer.handle,
+			offset = 0,
+			data = nil,
+		}, true
 	}
 
 	bytes, offset := staging_allocate_bytes(

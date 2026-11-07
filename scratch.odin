@@ -32,7 +32,7 @@ scratch_init :: proc(
 	buffer_init(
 		&scratch.buffer, device,
 		size = capacity,
-		buffer_usage = {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		buffer_usage = {.SHADER_DEVICE_ADDRESS, .INDIRECT_BUFFER, .STORAGE_BUFFER},
 		memory_flags = {.MAPPED, .HOST_ACCESS_SEQUENTIAL_WRITE},
 	) or_return
 
@@ -101,11 +101,16 @@ scratch_make :: proc(
 	$T: typeid/[]$E,
 	#any_int count: int,
 	#any_int alignment := 0,
-	zeroed := true,
+	zeroed := false,
 ) -> (result: Scratch_Subbuffer(E), ok: bool) {
 	assert(count >= 0)
 	if count == 0 {
-		return {}, true
+		return {
+			buffer_handle = scratch.buffer.handle,
+			address = 0,
+			offset = 0,
+			data = nil,
+		}, true
 	}
 
 	size := Device_Size(count * size_of(E))
@@ -128,7 +133,7 @@ scratch_new :: proc(
 	scratch: ^Scratch_Buffer,
 	$T: typeid,
 	#any_int alignment := 0,
-	zeroed := true,
+	zeroed := false,
 ) -> (result: Scratch_Subbuffer(T), ok: bool) {
 	return scratch_make(scratch, []T, 1, alignment, zeroed)
 }
@@ -149,7 +154,7 @@ scratch_slice_clone :: proc(
 	scratch: ^Scratch_Buffer,
 	src: []$E,
 	#any_int alignment := 0,
-) -> (result: Scratch_Slice(E), ok: bool) {
+) -> (result: Scratch_Subbuffer(E), ok: bool) {
 	result = scratch_make(scratch, []E, len(src), alignment, zeroed = false) or_return
 	copy(result.data, src)
 	return result, true

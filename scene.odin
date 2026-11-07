@@ -3,9 +3,16 @@ import "core:math"
 
 Scene :: struct {
 	camera: Camera,
+	clear_color: [4]f32,
 	ambient_light: Ambient_Light,
 	point_lights: [dynamic]Point_Light,
 	directional_lights: [dynamic]Directional_Light,
+	mesh_objects: [dynamic]Mesh_Object,
+}
+
+Mesh_Object :: struct {
+	transform: Affine_Transform,
+	mesh: Mesh_Handle,	
 }
 
 Ambient_Light :: struct {
@@ -46,6 +53,26 @@ Orthographic_Projection :: struct {
 	scale: f32,
 	near: f32,
 	far: f32,
+}
+
+scene_init :: proc(scene: ^Scene) {
+	assert(scene != nil)
+
+	scene.clear_color = {0.1, 0.1, 0.1, 1.0}
+	scene.camera = {
+		transform = AFFINE_IDENTITY,
+		projection = Perspective_Projection {
+			near = 0.001,
+			far = 1000.0,
+		},
+	}
+	scene.ambient_light = {
+		illuminance = 1.0,
+		color = {0.1, 0.1, 0.1},
+	}
+	scene.point_lights = make([dynamic]Point_Light, 0)
+	scene.directional_lights = make([dynamic]Directional_Light, 0)
+	scene.mesh_objects = make([dynamic]Mesh_Object, 0)
 }
 
 scene_destroy :: proc(scene: ^Scene) {

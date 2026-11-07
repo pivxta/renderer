@@ -38,8 +38,7 @@ perf_destroy :: proc(data: ^Performance_Data) {
 
 perf_start_frame :: proc(data: ^Performance_Data) {
 	assert(data != nil)
-	append(&data.frame_times, time.tick_since(data.last_frame))
-	data.last_frame = time.tick_now()
+	append(&data.frame_times, time.tick_lap_time(&data.last_frame))
 }
 
 perf_reset :: proc(data: ^Performance_Data) {
@@ -49,7 +48,7 @@ perf_reset :: proc(data: ^Performance_Data) {
 }
 
 perf_collect_stats :: proc(data: ^Performance_Data) -> (Performance_Stats, bool) {
-	stats, ok := perf_get_stats(data^)
+	stats, ok := perf_get_stats(data)
 	if !ok {
 		return {}, false
 	}
@@ -72,7 +71,7 @@ perf_collect_stats_after :: proc(
 	return {}, false
 }
 
-perf_get_stats :: proc(data: Performance_Data) -> (Performance_Stats, bool) {	
+perf_get_stats :: proc(data: ^Performance_Data) -> (Performance_Stats, bool) {
 	if len(data.frame_times) == 0 {
 		return {}, false
 	}
@@ -127,8 +126,10 @@ median :: proc(sorted_frame_times: []time.Duration) -> time.Duration {
 
 @(private="file")
 average_tail :: proc(sorted_frame_times: []time.Duration, percentile: f64) -> time.Duration {
+	assert(percentile > 0.0 && percentile <= 100.0)
+
 	if len(sorted_frame_times) == 0 {
-		return 0.0
+		return 0
 	}
 
 	count := int(math.ceil(f64(len(sorted_frame_times)) * (percentile / 100.0)))

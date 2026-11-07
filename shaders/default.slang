@@ -1,3 +1,5 @@
+import mesh;
+
 static const float PI = 3.1415926535;
 
 interface Light {
@@ -13,10 +15,9 @@ struct Instance {
     float3x4 object_to_world;
 }
 
-struct Vertex {
-    float3 position;
-    float3 normal;
-    float2 tex_coords;
+struct Draw {
+    MeshRecord* mesh_record;
+    uint instance_offset;
 }
 
 struct PointLight: Light {
@@ -53,17 +54,17 @@ struct DirLight: Light {
 struct Lighting {
     float ambient_illuminance;
     float3 ambient_color;
-    ImmutablePtr<PointLight> point_lights;
+    PointLight* point_lights;
     uint point_light_count;
-    ImmutablePtr<DirLight> dir_lights;
+    DirLight* dir_lights;
     uint dir_light_count;
 }
 
 struct PushConstants {
-    ImmutablePtr<View> view;
-    ImmutablePtr<Instance> instances;
-    ImmutablePtr<Vertex> vertices;
-    ImmutablePtr<Lighting> lighting;
+    View* view;
+    Draw* draws;
+    Instance* instances;
+    Lighting* lighting;
 }
 
 struct VertexOutput {
@@ -76,17 +77,27 @@ struct VertexOutput {
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
 
 [shader("vertex")]
-VertexOutput vertex_main(uint instance_id: SV_InstanceID, uint vertex_id: SV_VertexID) {
+VertexOutput vertex_main(
+    uint draw_id: SV_DrawIndex,
+    uint instance_id: SV_InstanceID, 
+    uint vertex_id: SV_VertexID
+) {
     VertexOutput output;
-    Instance instance = constants.instances[instance_id];
-    Vertex vertex = constants.vertices[vertex_id];
+    var mesh = constants.draws[draw_id].mesh_record;
+    var instance = constants.instances[constants.draws[draw_id].instance_offset + instance_id];
 
-    var world_normal = mul(float3x3(instance.object_to_world), vertex.normal);
-    var world_position = mul(instance.object_to_world, float4(vertex.position, 1.0));
+    var vertex_position = mesh_load_float(mesh, vertex_id, ATTR_POSITION, float4(0, 0, 0, 1)).xyz;
+    var vertex_tex_coord = mesh_load_float(mesh, vertex_id, ATTR_TEX_COORD_0, float4(0)).xy;
+    var vertex_unormal = mesh_load_float(mesh, vertex_id, ATTR_NORMAL, float4(0, 1, 0, 0)).xyz;
+    var vertex_normal = normalize(vertex_unormal);
+
+    var world_normal = mul(float3x3(instance.object_to_world), vertex_normal);
+    var world_position = mul(instance.object_to_world, float4(vertex_position, 1.0));
+
     output.clip_position = mul(constants.view.world_to_clip, float4(world_position, 1.0));
     output.world_position = world_position;
     output.world_normal = world_normal;
-    output.tex_coords = vertex.tex_coords;
+    output.tex_coords = vertex_tex_coord;
     return output;
 }
 

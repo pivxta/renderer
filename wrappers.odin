@@ -52,6 +52,7 @@ Texture_Error :: union #shared_nil {
 Buffer :: struct {
 	handle: vk.Buffer,
 	allocation: vma.Allocation,
+	usage: vk.BufferUsageFlags,
 	mapped: []byte,
 	address: Device_Address,
 	size: Device_Size,
@@ -453,6 +454,7 @@ buffer_init :: proc(
 	buffer.size = size
 	buffer.address = address
 	buffer.allocation = allocation
+	buffer.usage = buffer_usage
 	if alloc_info.pMappedData != nil {
 		buffer.mapped = slice.bytes_from_ptr(alloc_info.pMappedData, int(size))
 	}
