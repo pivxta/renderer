@@ -1,3 +1,6 @@
 [submodule "third_party/vma"]
 	path = third_party/vma
 	url = https://github.com/Capati/odin-vma
+[submodule "third_party/mikktspace"]
+	path = third_party/mikktspace
+	url = https://github.com/wrapperup/odin-mikktspace

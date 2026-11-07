@@ -94,12 +94,12 @@ upload_buffer_reserve :: proc(
 		staging_size = Device_Size(size.?)
 	}
 
-	assert(.TRANSFER_DST in buffer.usage)
 	assert(buffer.size >= offset + staging_size)
 	if staging_size == 0 {
 		return nil, true
 	}
 
+	assert(.TRANSFER_DST in buffer.usage)
 	buffer_usage: Resource_Usage
 	if usage == nil {
 		buffer_usage = resource_usage_from_buffer_usage(buffer.usage)
@@ -158,12 +158,12 @@ upload_subbuffer_reserve :: proc(
 		staging_size = Device_Size(count.? * size_of(T))
 	}
 
-	assert(.TRANSFER_DST in buffer.buffer_usage)
 	assert(buffer.size >= offset + staging_size)
 	if staging_size == 0 {
 		return nil, true
 	}
 
+	assert(.TRANSFER_DST in buffer.buffer_usage)
 	buffer_usage: Resource_Usage
 	if usage == nil {
 		buffer_usage = resource_usage_from_buffer_usage(buffer.buffer_usage)

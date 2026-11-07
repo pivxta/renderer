@@ -74,8 +74,10 @@ main :: proc() {
 	perf := perf_make()
 	flycam := default_flycam()
 	controls := default_controls()
+
 	scene: Scene
 	scene_init(&scene)
+
 	append(&scene.directional_lights, {
 		direction = {0.4, -1.0, 0.2},
 		color = {1.0, 1.0, 1.0},
@@ -86,6 +88,23 @@ main :: proc() {
 		color = {1.0, 1.0, 0.5},
 		power = 200.0,
 	})
+
+	cube_mesh := make_cube()
+	cube_handle, cube_err := renderer_add_mesh(&renderer, cube_mesh)
+	delete_mesh(cube_mesh)
+	if cube_err != nil {
+		log.panic("Failed to add cube mesh")
+	}
+	defer renderer_destroy_mesh(&renderer, cube_handle)
+
+	for i in 0..<10 {
+		for j in 0..<10 {
+			append(&scene.mesh_objects, {
+				transform = affine_make({(f32(i) - 4.5) * 3.0, -2.0, (f32(j) - 4.5) * 3.0}),
+				mesh = cube_handle,
+			})
+		}
+	}
 
 	current_time := time.tick_now()
 	for !window_should_close(window) {

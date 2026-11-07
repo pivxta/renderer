@@ -1,5 +1,6 @@
 package main
-import _ "core:log"
+import "base:runtime"
+import "core:log"
 import "core:slice"
 import "core:math/bits"
 import vk "vendor:vulkan"
@@ -145,33 +146,41 @@ pool_free :: proc(pool: ^Pool_Buffer, subbuffer: ^Pool_Subbuffer($E)) {
 
 @(require_results)
 pool_subbuffer_flush :: proc(
-	subbuffer: ^Pool_Subbuffer($T), 
-	device: Device, 
+	subbuffer: ^Pool_Subbuffer($T),
+	device: Device,
 	#any_int offset: Device_Size = 0,
 	#any_int size: Device_Size = 0,
 	location := #caller_location,
 ) -> Buffer_Error {
 	assert(subbuffer != nil, location)
+	return flush_range(
+		device, 
+		subbuffer.buffer_allocation, 
+		subbuffer.offset, subbuffer.size, 
+		offset, size, location,
+	)
+}
 
-	if offset > subbuffer.size {
-		log.errorf("Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)", 
-		           offset, subbuffer.size, location=location)
+@(private="file", require_results)
+flush_range :: proc(
+	device: Device,
+	allocation: vma.Allocation,
+	base, total, offset, size: Device_Size,
+	location: runtime.Source_Code_Location,
+) -> Buffer_Error {
+	if offset > total {
+		log.errorf("Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)",
+		           offset, total, location = location)
 		return Buffer_Access_Error.Flush_Out_Of_Bounds
 	}
-	
-	flush_size: Device_Size
+
+	flush_size: Device_Size 
 	if size == 0 {
-		flush_size = subbuffer.size - offset
+		flush_size = total - offset 
 	} else {
-		flush_size = min(size, subbuffer.size - offset)
+		flush_size = min(size, total - offset)
 	}
 
-	vma.FlushAllocation(
-		device.allocator, 
-		subbuffer.buffer_allocation,
-		subbuffer.offset + offset, 
-		flush_size,
-	) or_return
-
+	vma.FlushAllocation(device.allocator, allocation, base + offset, flush_size) or_return
 	return nil
 }

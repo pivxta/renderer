@@ -80,6 +80,7 @@ scene_destroy :: proc(scene: ^Scene) {
 		return
 	}
 
+	delete(scene.mesh_objects)
 	delete(scene.point_lights)
 	delete(scene.directional_lights)
 	scene^ = {}
