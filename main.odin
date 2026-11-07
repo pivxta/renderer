@@ -4,8 +4,8 @@ import "core:math"
 import "core:os"
 import "core:time"
 import "core:math/linalg"
-import "core:mem"
-import "core:fmt"
+@(require) import "core:mem"
+@(require) import "core:fmt"
 
 Controls :: struct {
 	walk_forward: Key,
@@ -89,11 +89,11 @@ main :: proc() {
 		power = 200.0,
 	})
 
-	cube_mesh := make_cube()
+	cube_mesh := make_sphere()
 	cube_handle, cube_err := renderer_add_mesh(&renderer, cube_mesh)
 	delete_mesh(cube_mesh)
 	if cube_err != nil {
-		log.panic("Failed to add cube mesh")
+		log.error("Failed to create cube mesh")
 	}
 	defer renderer_destroy_mesh(&renderer, cube_handle)
 
@@ -124,6 +124,7 @@ main :: proc() {
 				time.duration_milliseconds(stats.low_0_1pct_frame_time),
 			)
 		}
+
 
 		cursor_state := window_get_cursor_state(window)
 		if (.Just_Pressed in get_mouse_button(window, .Left) && cursor_state == .Normal) ||

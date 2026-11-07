@@ -2,6 +2,7 @@ package build
 
 import "core:os"
 import "core:fmt"
+import "core:flags"
 import "core:strings"
 import "core:path/filepath"
 import "core:time"
@@ -16,10 +17,25 @@ VMA_DIR :: "third_party/vma"
 VMA_VK_VERSION :: "3"
 VMA_PREMAKE_ACTION_WINDOWS :: "vs2022"
 
+Toggle :: enum {
+	auto,
+	on,
+	off,
+}
+
+Options :: struct {
+	release: bool `usage:"Optimized build (-o:speed) instead of a debug build."`,
+	validation: Toggle `usage:"Vulkan validation layer: auto (on in debug), on, off."`,
+	sync_validation: Toggle `usage:"Synchronization validation: auto (on in debug), on, off."`,
+}
+
 main :: proc() {
+	options: Options
+	flags.parse_or_exit(&options, os.args, .Odin)
+
 	build_vma()
 	compile_shaders()
-	build_program()
+	build_program(options)
 }
 
 build_vma :: proc() {
@@ -114,10 +130,34 @@ compile_shaders :: proc() {
 	}
 }
 
-build_program :: proc() {
-	_ = os.make_directory_all(BUILD_OUT)
-	out_arg := fmt.tprintf("-out:\"%s/%s\"", BUILD_OUT, PROGRAM_NAME)
-	run({"odin", "build", ".", "-debug", "-vet", "-strict-style", "-disallow-do", "-warnings-as-errors", out_arg})
+build_program :: proc(options: Options) {
+	mode := "release" if options.release else "debug"
+	out_dir := fmt.tprintf("%s/%s", BUILD_OUT, mode)
+	_ = os.make_directory_all(out_dir)
+
+	args := make([dynamic]string, context.temp_allocator)
+	append(&args, "odin", "build", ".")
+	append(&args, "-o:speed" if options.release else "-debug")
+	append_toggle_define(&args, "ENABLE_VALIDATION", options.validation)
+	append_toggle_define(&args, "ENABLE_SYNC_VALIDATION", options.sync_validation)
+	append(&args, "-vet", "-strict-style", "-disallow-do", "-warnings-as-errors")
+	append(&args, fmt.tprintf("-out:%s/%s", out_dir, PROGRAM_NAME))
+
+	fmt.eprintfln(
+		"Building %s (%s, validation: %v, sync validation: %v)",
+		PROGRAM_NAME, mode, options.validation, options.sync_validation,
+	)
+	run(args[:])
+}
+
+append_toggle_define :: proc(args: ^[dynamic]string, name: string, toggle: Toggle) {
+	switch toggle {
+	case .auto:
+	case .on:
+		append(args, fmt.tprintf("-define:%s=true", name))
+	case .off:
+		append(args, fmt.tprintf("-define:%s=false", name))
+	}
 }
 
 newest_modification_time :: proc(dir: string) -> (newest: time.Time) {
