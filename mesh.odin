@@ -12,6 +12,7 @@ Mesh :: struct {
 
 Mesh_Error :: enum {
 	None = 0,
+	Invalid_Handle,
 	Out_Of_Gpu_Memory,
 	Out_Of_Staging_Memory,
 	Invalid_Vertex_Count,

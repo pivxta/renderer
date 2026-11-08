@@ -311,6 +311,7 @@ check_device_features :: proc(
 	check(vk12.descriptorIndexing, "descriptorIndexing", name, &ok)
 	check(vk12.runtimeDescriptorArray, "runtimeDescriptorArray", name, &ok)
 	check(vk12.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound", name, &ok)
+	check(vk12.descriptorBindingUpdateUnusedWhilePending, "descriptorBindingUpdateUnusedWhilePending", name, &ok)
 	check(vk12.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind", name, &ok)
 	check(vk12.shaderSampledImageArrayNonUniformIndexing, "shaderSampledImageArrayNonUniformIndexing", name, &ok)
 
@@ -361,6 +362,7 @@ create_device_and_queues :: proc(d: ^Device) -> Device_Error {
 		descriptorIndexing = true,
 		runtimeDescriptorArray = true,
 		descriptorBindingPartiallyBound = true,
+		descriptorBindingUpdateUnusedWhilePending = true,
 		descriptorBindingSampledImageUpdateAfterBind = true,
 		shaderSampledImageArrayNonUniformIndexing = true,
 	}

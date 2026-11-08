@@ -11,6 +11,7 @@ SCRATCH_CAPACITY :: 16 * 1024 * 1024
 MESH_POOL_CAPACITY :: 128 * 1024 * 1024
 INDEX_POOL_CAPACITY :: 128 * 1024 * 1024
 ARENA_CAPACITY :: 128 * mem.Megabyte
+TEXTURES_CAPACITY :: 65536
 
 Renderer :: struct {
 	instance: Instance,
@@ -21,17 +22,14 @@ Renderer :: struct {
 	meshes: Meshes,
 	arena: virtual.Arena,
 
+	bindless_samplers: Bindless_Samplers(Texture_Sampler),
+	bindless_textures: Bindless_Textures,
+	texture_handle: Bindless_Handle,
+
 	pipeline_layout: vk.PipelineLayout,
 	pipeline: vk.Pipeline,
 
 	depth_texture: Texture,
-
-	descriptor_pool: vk.DescriptorPool,
-	descriptor_set_layout: vk.DescriptorSetLayout,
-	descriptor_set: vk.DescriptorSet,
-
-	texture: Texture,
-	sampler: vk.Sampler,
 }
 
 Renderer_Draw_Error :: enum {
@@ -124,6 +122,14 @@ make_draw_key :: proc(pipeline: u16, indexed: bool, handle: Mesh_Handle) -> Draw
 	return Draw_Key((u64(pipeline) << 33) | (u64(indexed) << 32) | u64(handle.idx))
 }
 
+Texture_Sampler :: enum {
+	Linear_Repeat,
+}
+
+TEXTURE_SAMPLER_DESCS := [Texture_Sampler]Sampler_Desc {
+	.Linear_Repeat = {address_mode = .REPEAT, mag_filter = .LINEAR},
+}
+
 @(require_results)
 renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	assert(r != nil)
@@ -139,10 +145,11 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
 	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
 	meshes_init(&r.meshes, r.device, MESH_POOL_CAPACITY, INDEX_POOL_CAPACITY) or_return
+	bindless_samplers_init(&r.bindless_samplers, r.device, TEXTURE_SAMPLER_DESCS) or_return
+	bindless_init(&r.bindless_textures, r.device, TEXTURES_CAPACITY) or_return
 
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
-	create_descriptor_sets(r) or_return
 	create_pipeline_layout(r) or_return
 	create_pipeline(r) or_return
 	load_textures(r) or_return
@@ -158,12 +165,12 @@ renderer_destroy :: proc (r: ^Renderer) {
 	if r.device.logical != nil {
 		_ = vk.DeviceWaitIdle(r.device.logical)
 	}
-	destroy_textures(r)
 	destroy_pipeline(r)
 	destroy_pipeline_layout(r)
-	destroy_descriptor_sets(r)
 	destroy_depth_texture(r)
 
+	bindless_samplers_destroy(&r.bindless_samplers, r.device)
+	bindless_destroy(&r.bindless_textures, r.device)
 	meshes_destroy(&r.meshes, r.device)
 	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
@@ -176,6 +183,10 @@ renderer_destroy :: proc (r: ^Renderer) {
 
 renderer_add_mesh :: proc (r: ^Renderer, mesh: Mesh) -> (Mesh_Handle, Mesh_Error) {
 	return meshes_add(&r.meshes, &r.upload_queue, r.frame_ring, mesh)
+}
+
+renderer_replace_mesh :: proc (r: ^Renderer, handle: Mesh_Handle, mesh: Mesh) -> Mesh_Error {
+	return meshes_replace(&r.meshes, &r.upload_queue, r.frame_ring, handle, mesh)
 }
 
 renderer_destroy_mesh :: proc (r: ^Renderer, handle: Mesh_Handle) {
@@ -217,6 +228,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
+	bindless_destroy_pending(&r.bindless_textures, r.device, frame_context.finished_timeline_value)
 	meshes_destroy_pending(&r.meshes, frame_context.finished_timeline_value)
 	upload_queue_retire(&r.upload_queue, frame_context.finished_timeline_value)
 	upload_queue_flush(&r.upload_queue, r.device) or_return
@@ -501,9 +513,18 @@ record_draw_commands :: proc(
 		instances_address = frame_data.instances.address,
 	}
 
-	descriptor_set := renderer.descriptor_set
+	descriptor_sets := []vk.DescriptorSet {
+		renderer.bindless_samplers.descriptor_set,
+		renderer.bindless_textures.descriptor_set,
+	}
+	vk.CmdBindDescriptorSets(
+		commands, .GRAPHICS, 
+		renderer.pipeline_layout, 
+		0, u32(len(descriptor_sets)), raw_data(descriptor_sets), 
+		0, nil,
+	)
+
 	vk.CmdBindPipeline(commands, .GRAPHICS, renderer.pipeline)
-	vk.CmdBindDescriptorSets(commands, .GRAPHICS, renderer.pipeline_layout, 0, 1, &descriptor_set, 0, nil)
 	vk.CmdBindIndexBuffer(commands, meshes_get_index_buffer(renderer.meshes).handle, 0, .UINT32)
 	if len(frame_data.indexed_commands.data) > 0 {
 		constants.draws_address = frame_data.indexed_draws.address
@@ -556,19 +577,27 @@ load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	}
 	defer image_destroy(&image)
 
+	texture: Texture
 	texture_init(
-		&r.texture, r.device,
+		&texture, r.device,
 		type = .D2,
 		format = image_format_to_vk(image.format, srgb=true),
 		usage = {.TRANSFER_DST, .SAMPLED},
 		extent = {u32(image.width), u32(image.height), 1},
 	) or_return
 
-	ok := upload_texture(
+	ok: bool
+
+	r.texture_handle, ok = bindless_add(&r.bindless_textures, r.device, texture)
+	if !ok {
+		texture_destroy(&texture, r.device)
+		log.panic("Failed to add texture to bindless table")
+	}
+
+	ok = upload_texture(
 		&r.upload_queue, 
 		r.frame_ring, 
-		r.texture, 
-		image,
+		texture, image,
 		{ 
 			stages = {.FRAGMENT_SHADER},
 			access = {.SHADER_SAMPLED_READ},
@@ -579,159 +608,8 @@ load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 		log.panic("Failed to upload texture")
 	}
 
-	sampler_info := vk.SamplerCreateInfo {
-		sType = .SAMPLER_CREATE_INFO,
-		magFilter = .NEAREST,
-		minFilter = .LINEAR,
-		mipmapMode = .LINEAR,
-		addressModeU = .REPEAT,
-		addressModeV = .REPEAT,
-		addressModeW = .REPEAT,
-		minLod = 0.0,
-		maxLod = 128.0,
-	}
-
-	vk.CreateSampler(r.device.logical, &sampler_info, nil, &r.sampler) or_return
-
-	desc_image_info := vk.DescriptorImageInfo {
-		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-		imageView = r.texture.full_view.handle,
-		sampler = r.sampler,
-	}
-	write_image := vk.WriteDescriptorSet {
-		sType = .WRITE_DESCRIPTOR_SET,
-		dstSet = r.descriptor_set,
-		dstBinding = 0,
-		dstArrayElement = 0,
-		descriptorCount = 1,
-		descriptorType = .COMBINED_IMAGE_SAMPLER,
-		pImageInfo = &desc_image_info,
-	}
-
-	vk.UpdateDescriptorSets(r.device.logical, 1, &write_image, 0, nil)
 	return nil
 }
-
-destroy_textures :: proc(r: ^Renderer) {
-	if r.sampler != 0 {
-		vk.DestroySampler(r.device.logical, r.sampler, nil)
-		r.sampler = 0
-	}
-	texture_destroy(&r.texture, r.device)
-}
-
-
-/*
-@(require_results)
-create_buffers :: proc(r: ^Renderer) -> Buffer_Error {
-	vertices := []Vertex_Data {
-		// -Z
-		{{-0.5, -0.5, -0.5}, {0.0, 0.0, -1.0}, {0.0, 1.0}},
-		{{0.5, -0.5, -0.5}, {0.0, 0.0, -1.0}, {1.0, 1.0}},
-		{{0.5, 0.5, -0.5}, {0.0, 0.0, -1.0}, {1.0, 0.0}},
-		{{-0.5, -0.5, -0.5}, {0.0, 0.0, -1.0}, {0.0, 1.0}},
-		{{0.5, 0.5, -0.5}, {0.0, 0.0, -1.0}, {1.0, 0.0}},
-		{{-0.5, 0.5, -0.5}, {0.0, 0.0, -1.0}, {0.0, 0.0}},
-		// +Z
-		{{0.5, -0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
-		{{-0.5, -0.5, 0.5}, {0.0, 0.0, 1.0}, {1.0, 1.0}},
-		{{-0.5, 0.5, 0.5}, {0.0, 0.0, 1.0}, {1.0, 0.0}},
-		{{0.5, -0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
-		{{-0.5, 0.5, 0.5}, {0.0, 0.0, 1.0}, {1.0, 0.0}},
-		{{0.5, 0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 0.0}},
-		// +X
-		{{0.5, -0.5, -0.5}, {1.0, 0.0, 0.0}, {0.0, 1.0}},
-		{{0.5, -0.5, 0.5}, {1.0, 0.0, 0.0}, {1.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
-		{{0.5, -0.5, -0.5}, {1.0, 0.0, 0.0}, {0.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
-		{{0.5, 0.5, -0.5}, {1.0, 0.0, 0.0}, {0.0, 0.0}},
-		// -X
-		{{-0.5, -0.5, 0.5}, {-1.0, 0.0, 0.0}, {0.0, 1.0}},
-		{{-0.5, -0.5, -0.5}, {-1.0, 0.0, 0.0}, {1.0, 1.0}},
-		{{-0.5, 0.5, -0.5}, {-1.0, 0.0, 0.0}, {1.0, 0.0}},
-		{{-0.5, -0.5, 0.5}, {-1.0, 0.0, 0.0}, {0.0, 1.0}},
-		{{-0.5, 0.5, -0.5}, {-1.0, 0.0, 0.0}, {1.0, 0.0}},
-		{{-0.5, 0.5, 0.5}, {-1.0, 0.0, 0.0}, {0.0, 0.0}},
-		// +Y
-		{{-0.5, 0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 1.0}},
-		{{0.5, 0.5, -0.5}, {0.0, 1.0, 0.0}, {1.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {0.0, 1.0, 0.0}, {1.0, 0.0}},
-		{{-0.5, 0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 1.0}},
-		{{0.5, 0.5, 0.5}, {0.0, 1.0, 0.0}, {1.0, 0.0}},
-		{{-0.5, 0.5, 0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
-		// -Y
-		{{0.5, -0.5, -0.5}, {0.0, -1.0, 0.0}, {0.0, 1.0}},
-		{{-0.5, -0.5, -0.5}, {0.0, -1.0, 0.0}, {1.0, 1.0}},
-		{{-0.5, -0.5, 0.5}, {0.0, -1.0, 0.0}, {1.0, 0.0}},
-		{{0.5, -0.5, -0.5}, {0.0, -1.0, 0.0}, {0.0, 1.0}},
-		{{-0.5, -0.5, 0.5}, {0.0, -1.0, 0.0}, {1.0, 0.0}},
-		{{0.5, -0.5, 0.5}, {0.0, -1.0, 0.0}, {0.0, 0.0}},
-	}
-
-	instances := make([dynamic]Instance_Data, 0, 0, context.temp_allocator)
-
-	rows := 10
-	columns := 10
-	spacing := f32(3.0)
-	for a in 0..<rows {
-		for b in 0..<columns {
-			transform := affine_make({
-				(f32(a) - f32(rows) * 0.5 + 0.5) * spacing, -1.0, 
-				(f32(b) - f32(columns) * 0.5 + 0.5) * spacing,
-			})
-			append(&instances, Instance_Data {
-				object_to_world = affine_to_matrix3x4(transform),
-			})
-		}
-	}
-
-	ok: bool
-
-	if r.vertex_buffer, ok = pool_make(&r.mesh_pool, []Vertex_Data, len(vertices)); !ok {
-		panic("Failed to create vertex buffer")
-	}
-
-	if r.instance_buffer, ok = pool_make(&r.mesh_pool, []Instance_Data, len(instances)); !ok {
-		panic("Failed to create instance buffer")
-	}
-	
-	ok = upload_subbuffer(
-		&r.upload_queue,
-		r.frame_ring,
-		r.vertex_buffer,
-		vertices,
-		{
-			stages = {.VERTEX_SHADER},
-			access = {.SHADER_STORAGE_READ},
-		},
-	)
-	if !ok {
-		panic("Failed to upload vertex buffer")
-	}
-
-	ok = upload_subbuffer(
-		&r.upload_queue,
-		r.frame_ring,
-		r.instance_buffer,
-		instances[:],
-		{
-			stages = {.VERTEX_SHADER},
-			access = {.SHADER_STORAGE_READ},
-		},
-	)
-	if !ok {
-		panic("Failed to upload instance buffer")
-	}
-
-	return nil
-}
-
-destroy_buffers :: proc(r: ^Renderer) {
-	pool_free(&r.mesh_pool, &r.instance_buffer)
-	pool_free(&r.mesh_pool, &r.vertex_buffer)
-}
-*/
 
 @(require_results)
 create_depth_texture :: proc(r: ^Renderer) -> Texture_Error {
@@ -758,69 +636,11 @@ destroy_depth_texture :: proc(r: ^Renderer) {
 }
 
 @(require_results)
-create_descriptor_sets :: proc(r: ^Renderer) -> vk.Result {
-	pool_sizes := []vk.DescriptorPoolSize {
-		{
-			type = .COMBINED_IMAGE_SAMPLER,
-			descriptorCount = 1,
-		},
-	}
-	pool_info := vk.DescriptorPoolCreateInfo {
-		sType = .DESCRIPTOR_POOL_CREATE_INFO,
-		maxSets = 1,
-		poolSizeCount = u32(len(pool_sizes)),
-		pPoolSizes = raw_data(pool_sizes),
-	}
-
-	vk.CreateDescriptorPool(r.device.logical, &pool_info, nil, &r.descriptor_pool) or_return
-
-	bindings := []vk.DescriptorSetLayoutBinding {
-		{
-			binding = 0,
-			descriptorType = .COMBINED_IMAGE_SAMPLER,
-			descriptorCount = 1,
-			stageFlags = {.FRAGMENT},
-		},
-	}
-	layout_info := vk.DescriptorSetLayoutCreateInfo {
-		sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		bindingCount = u32(len(bindings)),
-		pBindings = raw_data(bindings),
-	}
-
-	vk.CreateDescriptorSetLayout(
-		r.device.logical, &layout_info, nil, 
-		&r.descriptor_set_layout,
-	) or_return
-
-	set_alloc_info := vk.DescriptorSetAllocateInfo {
-		sType = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		descriptorPool = r.descriptor_pool,
-		descriptorSetCount = 1,
-		pSetLayouts = &r.descriptor_set_layout,
-	}
-
-	vk.AllocateDescriptorSets(
-		r.device.logical, &set_alloc_info,
-		&r.descriptor_set,
-	) or_return
-
-	return .SUCCESS
-}
-
-destroy_descriptor_sets :: proc(r: ^Renderer) {
-	if r.descriptor_set_layout != 0 {
-		vk.DestroyDescriptorSetLayout(r.device.logical, r.descriptor_set_layout, nil)
-		r.descriptor_set_layout = 0
-	}
-	if r.descriptor_pool != 0 {
-		vk.DestroyDescriptorPool(r.device.logical, r.descriptor_pool, nil)
-		r.descriptor_pool = 0
-	}
-}
-
-@(require_results)
 create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
+	set_layouts := []vk.DescriptorSetLayout {
+		r.bindless_samplers.descriptor_set_layout,
+		r.bindless_textures.descriptor_set_layout,
+	}
 	push_constant_range := vk.PushConstantRange {
 		stageFlags = {.VERTEX, .FRAGMENT},
 		offset = 0,
@@ -828,8 +648,8 @@ create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
 	}
 	layout_info := vk.PipelineLayoutCreateInfo {
 		sType = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount = 1,
-		pSetLayouts = &r.descriptor_set_layout,
+		setLayoutCount = u32(len(set_layouts)),
+		pSetLayouts = raw_data(set_layouts),
 		pushConstantRangeCount = 1,
 		pPushConstantRanges = &push_constant_range,
 	}

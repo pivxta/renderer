@@ -105,8 +105,8 @@ get_view_to_clip_matrix :: proc (
 		transform = matrix4_orthographic_reverse_z(
 			left = -0.5 * aspect * p.scale,
 			right = 0.5 * aspect * p.scale,
-			top = 0.5,
-			bottom = -0.5,
+			top = 0.5 * p.scale,
+			bottom = -0.5 * p.scale,
 			near = p.near,
 			far = p.far,
 		)

@@ -64,19 +64,19 @@ main :: proc() {
 	if err != nil {
 		os.exit(1)
 	}
+	defer window_destroy(window)
 
 	renderer: Renderer
 	if err := renderer_init(&renderer, window); err != nil {
 		os.exit(1)
 	}
+	defer renderer_destroy(&renderer)
 
 	window_set_cursor_state(window, .Disabled)
-	perf := perf_make()
-	flycam := default_flycam()
-	controls := default_controls()
 
 	scene: Scene
 	scene_init(&scene)
+	defer scene_destroy(&scene)
 
 	append(&scene.directional_lights, {
 		direction = {0.4, -1.0, 0.2},
@@ -89,22 +89,32 @@ main :: proc() {
 		power = 200.0,
 	})
 
-	cube_mesh := make_sphere()
+	cube_mesh := make_cube()
 	cube_handle, cube_err := renderer_add_mesh(&renderer, cube_mesh)
 	delete_mesh(cube_mesh)
 	if cube_err != nil {
 		log.error("Failed to create cube mesh")
 	}
-	defer renderer_destroy_mesh(&renderer, cube_handle)
 
-	for i in 0..<10 {
-		for j in 0..<10 {
+	rows := 10
+	columns := 10
+	spacing := f32(3.0)
+	for i in 0..<rows {
+		for j in 0..<columns {
 			append(&scene.mesh_objects, {
-				transform = affine_make({(f32(i) - 4.5) * 3.0, -2.0, (f32(j) - 4.5) * 3.0}),
+				transform = affine_make({
+					(f32(i) - f32(rows) * 0.5 + 0.5) * spacing, -2.0, 
+					(f32(j) - f32(columns) * 0.5 + 0.5) * spacing,
+				}),
 				mesh = cube_handle,
 			})
 		}
 	}
+
+	flycam := default_flycam()
+	controls := default_controls()
+	perf := perf_make()
+	defer perf_destroy(&perf)
 
 	current_time := time.tick_now()
 	for !window_should_close(window) {
@@ -124,7 +134,6 @@ main :: proc() {
 				time.duration_milliseconds(stats.low_0_1pct_frame_time),
 			)
 		}
-
 
 		cursor_state := window_get_cursor_state(window)
 		if (.Just_Pressed in get_mouse_button(window, .Left) && cursor_state == .Normal) ||
@@ -154,10 +163,6 @@ main :: proc() {
 		free_all(context.temp_allocator)
 	}
 
-	perf_destroy(&perf)
-	scene_destroy(&scene)
-	renderer_destroy(&renderer)
-	window_destroy(window)
 }
 
 look_around :: proc(flycam: ^Fly_Camera, window: ^Window, controls: Controls) {

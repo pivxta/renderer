@@ -102,11 +102,15 @@ VertexOutput vertex_main(
 }
 
 [[vk::binding(0, 0)]]
-Sampler2D[] samplers;
+SamplerState[] samplers;
+
+[[vk::binding(0, 1)]]
+Texture2D[] textures;
 
 [shader("fragment")]
 float4 fragment_main(VertexOutput input): SV_Target {
-    let albedo = samplers[0].Sample(input.tex_coords).rgb;
+    let albedo = textures[NonUniformResourceIndex(1)]
+        .Sample(samplers[NonUniformResourceIndex(0)], input.tex_coords).rgb;
     let normal = normalize(input.world_normal);
     
     var color = albedo / PI

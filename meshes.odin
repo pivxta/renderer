@@ -1,5 +1,4 @@
 package main
-
 import "core:container/handle_map"
 import "core:container/queue"
 
@@ -98,6 +97,44 @@ meshes_add :: proc(
 	mesh: Mesh,
 ) -> (handle: Mesh_Handle, err: Mesh_Error) {
 	assert(meshes != nil)
+
+	slot := allocate_mesh(meshes, mesh) or_return
+	if err = upload_mesh(meshes, upload_queue, frame_ring, slot, mesh); err != nil {
+		defer_free(meshes, frame_ring, slot)
+		return {}, err
+	}
+	
+	return handle_map.add(&meshes.handle_map, slot), nil
+}
+
+@(require_results)
+meshes_replace :: proc(
+	meshes: ^Meshes, 
+	upload_queue: ^Upload_Queue,
+	frame_ring: Frame_Ring,
+	handle: Mesh_Handle,
+	mesh: Mesh,
+) -> (err: Mesh_Error) {
+	slot, ok := handle_map.get(&meshes.handle_map, handle)
+	if !ok {
+		return .Invalid_Handle
+	}
+
+	new_slot := allocate_mesh(meshes, mesh) or_return
+	if err = upload_mesh(meshes, upload_queue, frame_ring, new_slot, mesh); err != nil {
+		defer_free(meshes, frame_ring, new_slot)
+		return err
+	}
+
+	defer_free(meshes, frame_ring, slot^)
+	new_slot.handle = slot.handle
+	slot^ = new_slot
+	return nil
+}
+
+@(private="file", require_results)
+allocate_mesh :: proc(meshes: ^Meshes, mesh: Mesh) -> (slot: Mesh_Slot, err: Mesh_Error) {
+	assert(meshes != nil)
 	mesh_validate(mesh) or_return
 
 	// Allocate mesh subbuffers
@@ -136,31 +173,32 @@ meshes_add :: proc(
 		}
 	}
 
-	// Create mesh handle and store slot
-	attributes := mesh_attribute_set(mesh)
-	handle = handle_map.add(&meshes.handle_map, Mesh_Slot {
+	return {
 		index_count = u32(index_count),
 		vertex_count = u32(mesh.vertex_count),
-		attributes = attributes,
+		attributes = mesh_attribute_set(mesh),
 		indices = indices,
 		record = record,
 		data = data,
-	})
-	defer if err != nil {
-		meshes_remove(meshes, frame_ring, handle)
-		handle = {}
-	}
+	}, nil
+}
 
-	// Upload data
+@(private="file", require_results)
+upload_mesh :: proc(
+	meshes: ^Meshes, 
+	upload_queue: ^Upload_Queue,
+	frame_ring: Frame_Ring,
+	slot: Mesh_Slot,
+	mesh: Mesh,
+) -> (err: Mesh_Error) {
 	if mesh.indices != nil {
 		staging_indices, staging_indices_ok := upload_subbuffer_reserve(
 			upload_queue, 
 			frame_ring, 
-			indices.?,
+			slot.indices.?,
 		)
 		if !staging_indices_ok {
-			err = .Out_Of_Staging_Memory
-			return
+			return .Out_Of_Staging_Memory
 		}
 		
 		switch indices in mesh.indices {
@@ -176,11 +214,10 @@ meshes_add :: proc(
 	staging_data, staging_data_ok := upload_subbuffer_reserve(
 		upload_queue, 
 		frame_ring,
-		data,
+		slot.data,
 	)
 	if !staging_data_ok {
-		err = .Out_Of_Staging_Memory
-		return
+		return .Out_Of_Staging_Memory
 	}
 	
 	offset := 0
@@ -200,36 +237,40 @@ meshes_add :: proc(
 	staging_record, staging_record_ok := upload_subbuffer_reserve(
 		upload_queue,
 		frame_ring,
-		record,
+		slot.record,
 	)
 	if !staging_record_ok {
-		err = .Out_Of_Staging_Memory
-		return
+		return .Out_Of_Staging_Memory
 	}
 	staging_record[0] = {
-		data_address = data.address,
+		data_address = slot.data.address,
 		data_offsets = data_offsets,
 		encodings = data_encodings,
 		divisors = data_divisors,
-		attributes = attributes,
+		attributes = slot.attributes,
 		vertex_count = u32(mesh.vertex_count),
 	}
-	
-	return handle, nil
+
+	return nil
 }
 
 meshes_remove :: proc(meshes: ^Meshes, frame_ring: Frame_Ring, handle: Mesh_Handle) {
 	assert(meshes != nil)
 
 	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok {
-		queue.enqueue(&meshes.pending_frees, {
-			retire_value = frame_ring.timeline_value + 1,
-			indices = slot.indices,
-			record = slot.record,
-			data = slot.data,
-		})
+		defer_free(meshes, frame_ring, slot^)
 		handle_map.remove(&meshes.handle_map, handle)
 	}
+}
+
+@(private="file")
+defer_free :: proc(meshes: ^Meshes, frame_ring: Frame_Ring, slot: Mesh_Slot) {
+	queue.enqueue(&meshes.pending_frees, {
+		retire_value = frame_ring.timeline_value + 1,
+		indices = slot.indices,
+		record = slot.record,
+		data = slot.data,
+	})
 }
 
 @(require_results)
