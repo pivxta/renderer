@@ -89,6 +89,13 @@ meshes_destroy :: proc(meshes: ^Meshes, device: Device) {
 	meshes^ = {}
 }
 
+/*
+@(require_results)
+meshes_reserve :: proc(meshes: ^Meshes, mesh: Mesh) -> Mesh_Handle {
+	// TODO
+}
+*/
+
 @(require_results)
 meshes_add :: proc(
 	meshes: ^Meshes, 
@@ -107,7 +114,6 @@ meshes_add :: proc(
 	return handle_map.add(&meshes.handle_map, slot), nil
 }
 
-@(require_results)
 meshes_replace :: proc(
 	meshes: ^Meshes, 
 	upload_queue: ^Upload_Queue,

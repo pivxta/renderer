@@ -109,7 +109,7 @@ Texture2D[] textures;
 
 [shader("fragment")]
 float4 fragment_main(VertexOutput input): SV_Target {
-    let albedo = textures[NonUniformResourceIndex(1)]
+    let albedo = textures[NonUniformResourceIndex(2)]
         .Sample(samplers[NonUniformResourceIndex(0)], input.tex_coords).rgb;
     let normal = normalize(input.world_normal);
     

@@ -2,7 +2,7 @@ package main
 
 import hm "core:container/handle_map"
 
-Mesh_Handle :: hm.Handle64
+Mesh_Handle :: distinct hm.Handle64
 
 Mesh :: struct {
 	vertex_count: int,

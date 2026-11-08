@@ -33,7 +33,7 @@ Bindless_Samplers :: struct($E: typeid)
 	samplers:              [E]vk.Sampler,
 }
 
-Bindless_Handle :: handle_map.Handle64
+Bindless_Handle :: distinct handle_map.Handle64
 
 Bindless_Textures :: struct {
 	descriptor_pool:       vk.DescriptorPool,
@@ -119,6 +119,10 @@ bindless_samplers_configure :: proc(
 	device: Device,
 	new_globals: Sampler_Globals,
 ) -> vk.Result {
+	if samplers.globals == new_globals {
+		return .SUCCESS
+	}
+
 	vk.DeviceWaitIdle(device.logical) or_return
 	new_samplers := create_samplers(device, samplers.descs, new_globals) or_return
 	write_samplers(device, samplers.descriptor_set, new_samplers)
@@ -337,6 +341,10 @@ bindless_remove :: proc(
 	assert(textures != nil)
 
 	if slot, ok := handle_map.get(&textures.texture_map, handle); ok {
+		if slot.removed {
+			return
+		}
+
 		slot.removed = true
 		queue.enqueue(&textures.pending_frees, {
 			retire_value = frame_ring.timeline_value + 1,
@@ -349,14 +357,14 @@ bindless_remove :: proc(
 bindless_get :: proc(
 	textures: ^Bindless_Textures, 
 	handle: Bindless_Handle,
-) -> (texture: ^Texture, ok: bool) {
+) -> (texture: Texture, ok: bool) {
 	assert(textures != nil)
 
 	slot := handle_map.get(&textures.texture_map, handle) or_return
 	if slot.removed {
-		return nil, false	
+		return {}, false	
 	}
-	return &slot.texture, true
+	return slot.texture, true
 }
 
 bindless_destroy_pending :: proc(

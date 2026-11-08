@@ -20,11 +20,10 @@ Renderer :: struct {
 	frame_ring: Frame_Ring,
 	upload_queue: Upload_Queue,
 	meshes: Meshes,
+	textures: Textures,
 	arena: virtual.Arena,
 
-	bindless_samplers: Bindless_Samplers(Texture_Sampler),
-	bindless_textures: Bindless_Textures,
-	texture_handle: Bindless_Handle,
+	texture_handle: Texture_Handle,
 
 	pipeline_layout: vk.PipelineLayout,
 	pipeline: vk.Pipeline,
@@ -122,14 +121,6 @@ make_draw_key :: proc(pipeline: u16, indexed: bool, handle: Mesh_Handle) -> Draw
 	return Draw_Key((u64(pipeline) << 33) | (u64(indexed) << 32) | u64(handle.idx))
 }
 
-Texture_Sampler :: enum {
-	Linear_Repeat,
-}
-
-TEXTURE_SAMPLER_DESCS := [Texture_Sampler]Sampler_Desc {
-	.Linear_Repeat = {address_mode = .REPEAT, mag_filter = .LINEAR},
-}
-
 @(require_results)
 renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	assert(r != nil)
@@ -145,15 +136,16 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
 	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
 	meshes_init(&r.meshes, r.device, MESH_POOL_CAPACITY, INDEX_POOL_CAPACITY) or_return
-	bindless_samplers_init(&r.bindless_samplers, r.device, TEXTURE_SAMPLER_DESCS) or_return
-	bindless_init(&r.bindless_textures, r.device, TEXTURES_CAPACITY) or_return
+	textures_init(
+		&r.textures, r.device, 
+		&r.upload_queue, r.frame_ring, 
+		TEXTURES_CAPACITY,
+	) or_return
 
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
 	create_pipeline_layout(r) or_return
 	create_pipeline(r) or_return
-	load_textures(r) or_return
-
 	return nil
 }
 
@@ -169,8 +161,7 @@ renderer_destroy :: proc (r: ^Renderer) {
 	destroy_pipeline_layout(r)
 	destroy_depth_texture(r)
 
-	bindless_samplers_destroy(&r.bindless_samplers, r.device)
-	bindless_destroy(&r.bindless_textures, r.device)
+	textures_destroy(&r.textures, r.device)
 	meshes_destroy(&r.meshes, r.device)
 	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
@@ -181,16 +172,61 @@ renderer_destroy :: proc (r: ^Renderer) {
 	r^ = {}
 }
 
-renderer_add_mesh :: proc (r: ^Renderer, mesh: Mesh) -> (Mesh_Handle, Mesh_Error) {
+@(require_results)
+renderer_add_mesh :: proc(r: ^Renderer, mesh: Mesh) -> (Mesh_Handle, Mesh_Error) {
 	return meshes_add(&r.meshes, &r.upload_queue, r.frame_ring, mesh)
 }
 
-renderer_replace_mesh :: proc (r: ^Renderer, handle: Mesh_Handle, mesh: Mesh) -> Mesh_Error {
+renderer_replace_mesh :: proc(r: ^Renderer, handle: Mesh_Handle, mesh: Mesh) -> Mesh_Error {
 	return meshes_replace(&r.meshes, &r.upload_queue, r.frame_ring, handle, mesh)
 }
 
-renderer_destroy_mesh :: proc (r: ^Renderer, handle: Mesh_Handle) {
+renderer_destroy_mesh :: proc(r: ^Renderer, handle: Mesh_Handle) {
 	meshes_remove(&r.meshes, r.frame_ring, handle)
+}
+
+@(require_results)
+renderer_reserve_texture :: proc(
+	r: ^Renderer, 
+	fallback := Texture_Fallback.Color_Default,
+) -> Texture_Handle {
+	return textures_reserve(&r.textures, fallback)
+}
+
+// This function returns a valid handle even when there is an error
+@(require_results)
+renderer_add_texture :: proc(
+	r: ^Renderer, 
+	image: Image, 
+	srgb := true,
+	fallback := Texture_Fallback.Color_Error,
+) -> (Texture_Handle, Texture_Error) {
+	return textures_add(
+		&r.textures, r.device, 
+		&r.upload_queue, r.frame_ring,
+		image, srgb, fallback,
+	)
+}
+
+renderer_replace_texture :: proc(
+	r: ^Renderer, 
+	handle: Texture_Handle, 
+	image: Image,
+	srgb := true,
+) -> Texture_Error {
+	return textures_replace(
+		&r.textures, r.device,
+		&r.upload_queue, r.frame_ring,
+		handle, image, srgb,
+	)
+}
+
+renderer_destroy_texture :: proc(r: ^Renderer, handle: Texture_Handle) {
+	textures_remove(&r.textures, r.frame_ring, handle)
+}
+
+renderer_set_texture_sampler_options :: proc(r: ^Renderer, options: Texture_Sampler_Options) {
+	textures_set_sampler_options(&r.textures, options)
 }
 
 @(require_results)
@@ -203,6 +239,9 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	if !ok {
 		return Renderer_Draw_Error.Out_Of_Scratch_Memory
 	}
+
+	clear(&r.textures.updated)
+	textures_reconfigure_dirty_samplers(&r.textures, r.device) or_return
 
 	surface_texture, acquire_result := surface_acquire_texture(
 		r.surface, 
@@ -228,7 +267,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
-	bindless_destroy_pending(&r.bindless_textures, r.device, frame_context.finished_timeline_value)
+	textures_destroy_pending(&r.textures, r.device, frame_context.finished_timeline_value)
 	meshes_destroy_pending(&r.meshes, frame_context.finished_timeline_value)
 	upload_queue_retire(&r.upload_queue, frame_context.finished_timeline_value)
 	upload_queue_flush(&r.upload_queue, r.device) or_return
@@ -514,8 +553,8 @@ record_draw_commands :: proc(
 	}
 
 	descriptor_sets := []vk.DescriptorSet {
-		renderer.bindless_samplers.descriptor_set,
-		renderer.bindless_textures.descriptor_set,
+		textures_get_sampler_set(renderer.textures),
+		textures_get_texture_set(renderer.textures),
 	}
 	vk.CmdBindDescriptorSets(
 		commands, .GRAPHICS, 
@@ -569,6 +608,7 @@ record_image_barrier :: proc(cmd: vk.CommandBuffer, barrier: vk.ImageMemoryBarri
 	vk.CmdPipelineBarrier2(cmd, &dependency_info)
 }
 
+/*
 @(require_results)
 load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	image, err := image_load_from_file("assets/rocksalbedo.jpg")
@@ -577,6 +617,7 @@ load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	}
 	defer image_destroy(&image)
 
+	/*
 	texture: Texture
 	texture_init(
 		&texture, r.device,
@@ -607,9 +648,11 @@ load_textures :: proc(r: ^Renderer) -> Renderer_Error {
 	if !ok {
 		log.panic("Failed to upload texture")
 	}
+	*/
 
 	return nil
 }
+*/
 
 @(require_results)
 create_depth_texture :: proc(r: ^Renderer) -> Texture_Error {
@@ -638,8 +681,8 @@ destroy_depth_texture :: proc(r: ^Renderer) {
 @(require_results)
 create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
 	set_layouts := []vk.DescriptorSetLayout {
-		r.bindless_samplers.descriptor_set_layout,
-		r.bindless_textures.descriptor_set_layout,
+		textures_get_sampler_set_layout(r.textures),
+		textures_get_texture_set_layout(r.textures),
 	}
 	push_constant_range := vk.PushConstantRange {
 		stageFlags = {.VERTEX, .FRAGMENT},

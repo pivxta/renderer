@@ -31,24 +31,6 @@ Texture_View :: struct {
 	array_layer_count: u32,
 }
 
-Texture_Access_Error :: enum {
-	None = 0,
-	Subresource_Range_Out_Of_Bounds,
-	Empty_Subresource_Range,
-	Invalid_View_Configuration,
-}
-
-Texture_Init_Error :: enum {
-	None = 0,
-	Allocation_Failed,
-}
-
-Texture_Error :: union #shared_nil {
-	Texture_Access_Error,
-	Texture_Init_Error,
-	vk.Result,
-}
-
 Buffer :: struct {
 	handle: vk.Buffer,
 	allocation: vma.Allocation,
