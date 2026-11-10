@@ -13,6 +13,7 @@ Scene :: struct {
 Mesh_Object :: struct {
 	transform: Affine_Transform,
 	mesh: Mesh_Handle,	
+	material: Material_Handle,
 }
 
 Ambient_Light :: struct {

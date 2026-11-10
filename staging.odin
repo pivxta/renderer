@@ -58,7 +58,7 @@ staging_flush :: proc(staging: ^Staging_Buffer, device: Device) -> Buffer_Error 
 	assert(staging != nil)
 	for block in tring_pending_blocks(staging.ring) {
 		if block.end > block.start {
-			buffer_flush(&staging.buffer, device, block.start, block.end - block.start) or_return
+			buffer_flush(staging.buffer, device, block.start, block.end - block.start) or_return
 		}
 	}
 	tring_commit(&staging.ring)

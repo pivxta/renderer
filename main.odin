@@ -89,12 +89,26 @@ main :: proc() {
 		power = 200.0,
 	})
 
-	cube_mesh := make_cube()
-	cube_handle, cube_err := renderer_add_mesh(&renderer, cube_mesh)
-	delete_mesh(cube_mesh)
+	cube := make_cube()
+	cube_mesh, cube_err := renderer_add_mesh(&renderer, cube)
+	delete_mesh(cube)
 	if cube_err != nil {
 		log.error("Failed to create cube mesh")
 	}
+
+	rocks_texture: Texture_Handle
+	if rocks_image, rocks_err := image_load_from_file("assets/rocksalbedo.jpg"); rocks_err == nil {
+		rocks_texture, _ = renderer_add_texture(&renderer, rocks_image)
+		image_destroy(&rocks_image)
+	} else {
+		log.error("Failed to load texture: %v", rocks_image)
+	}
+
+	rocks_material, _ := renderer_add_material(&renderer, Material {
+		base_color_factor = {1.0, 1.0, 1.0, 1.0},
+		base_color_texture = rocks_texture,
+		sampler = .Nearest_Repeat,
+	})
 
 	rows := 10
 	columns := 10
@@ -106,7 +120,8 @@ main :: proc() {
 					(f32(i) - f32(rows) * 0.5 + 0.5) * spacing, -2.0, 
 					(f32(j) - f32(columns) * 0.5 + 0.5) * spacing,
 				}),
-				mesh = cube_handle,
+				mesh = cube_mesh,
+				material = rocks_material,
 			})
 		}
 	}

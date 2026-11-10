@@ -69,7 +69,7 @@ scratch_flush :: proc(scratch: ^Scratch_Buffer, device: Device) -> Buffer_Error 
 	assert(scratch != nil)
 	for block in tring_pending_blocks(scratch.ring) {
 		if block.end > block.start {
-			buffer_flush(&scratch.buffer, device, block.start, block.end - block.start) or_return
+			buffer_flush(scratch.buffer, device, block.start, block.end - block.start) or_return
 		}
 	}
 	return nil

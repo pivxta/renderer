@@ -13,12 +13,22 @@ struct View {
 
 struct Instance {
     float3x4 object_to_world;
+    Material* material;
 }
 
 struct Draw {
-    MeshRecord* mesh_record;
-    uint instance_offset;
+    MeshRecord* mesh_record; 
+    uint instance_offset; 
+} 
+
+struct Material {
+    float4 base_color_factor;
+    uint base_color_index;
+    uint sampler_index;
+    uint flags;
 }
+
+static const uint MATERIAL_HAS_BASE_COLOR_TEXTURE = 1 << 0;
 
 struct PointLight: Light {
     float3 position;
@@ -72,6 +82,7 @@ struct VertexOutput {
     float3 world_position;
     float3 world_normal;
     float2 tex_coords;
+    nointerpolation Material* material;
 }
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
@@ -98,6 +109,7 @@ VertexOutput vertex_main(
     output.world_position = world_position;
     output.world_normal = world_normal;
     output.tex_coords = vertex_tex_coord;
+    output.material = instance.material;
     return output;
 }
 
@@ -109,8 +121,14 @@ Texture2D[] textures;
 
 [shader("fragment")]
 float4 fragment_main(VertexOutput input): SV_Target {
-    let albedo = textures[NonUniformResourceIndex(2)]
-        .Sample(samplers[NonUniformResourceIndex(0)], input.tex_coords).rgb;
+    var sampler = samplers[NonUniformResourceIndex(input.material.sampler_index)];
+
+    var albedo = input.material.base_color_factor.rgb;
+    if ((input.material.flags & MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
+        var texture = textures[NonUniformResourceIndex(input.material.base_color_index)];
+        albedo *= texture.Sample(sampler, input.tex_coords).rgb;
+    }
+    
     let normal = normalize(input.world_normal);
     
     var color = albedo / PI

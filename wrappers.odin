@@ -446,14 +446,12 @@ buffer_init :: proc(
 
 @(require_results)
 buffer_flush :: proc(
-	buffer: ^Buffer, 
+	buffer: Buffer, 
 	device: Device, 
 	#any_int offset: Device_Size = 0,
 	#any_int size: Device_Size = 0,
 	location := #caller_location,
 ) -> Buffer_Error {
-	assert(buffer != nil, loc=location)
-
 	if offset > buffer.size {
 		log.errorf("Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)", 
 		           offset, buffer.size, location=location)

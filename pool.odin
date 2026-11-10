@@ -10,6 +10,7 @@ POOL_DEFAULT_ALIGNMENT :: 16
 
 Pool_Subbuffer :: struct($T: typeid) {
 	mapped: []T,
+	count: int,
 	address: Device_Address,
 	offset: Device_Size,
 	size: Device_Size,
@@ -114,6 +115,7 @@ pool_make :: proc(
 	mapped := nil if pool.buffer.mapped == nil else pool.buffer.mapped[int(offset):][:int(size)]
 	return {
 		mapped = slice.reinterpret([]E, mapped),	
+		count = count,
 		address = address,
 		offset = offset,
 		size = size,
@@ -146,13 +148,12 @@ pool_free :: proc(pool: ^Pool_Buffer, subbuffer: ^Pool_Subbuffer($E)) {
 
 @(require_results)
 pool_subbuffer_flush :: proc(
-	subbuffer: ^Pool_Subbuffer($T),
+	subbuffer: Pool_Subbuffer($T),
 	device: Device,
 	#any_int offset: Device_Size = 0,
 	#any_int size: Device_Size = 0,
 	location := #caller_location,
 ) -> Buffer_Error {
-	assert(subbuffer != nil, location)
 	return flush_range(
 		device, 
 		subbuffer.buffer_allocation, 

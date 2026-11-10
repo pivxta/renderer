@@ -274,7 +274,7 @@ bindless_init :: proc(
 	) or_return
 
 	handle_map.dynamic_init(&textures.texture_map, allocator)
-	queue.init(&textures.pending_frees)
+	queue.init(&textures.pending_frees, queue.DEFAULT_CAPACITY, allocator)
 	return
 }
 

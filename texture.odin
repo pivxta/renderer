@@ -4,7 +4,9 @@ import "core:container/handle_map"
 
 Texture_Handle :: distinct handle_map.Handle64
 
-Texture_Sampler :: enum {
+Texture_Index :: distinct u32
+
+Texture_Sampler :: enum u32 {
 	Linear_Repeat,
 	Linear_Mirror,
 	Linear_Clamp,
@@ -23,6 +25,11 @@ Texture_Mipmap_Mode :: enum {
 	Nearest,
 }
 
+Texture_Colorspace :: enum {
+	Srgb,
+	Linear,
+}
+
 Texture_Sampler_Options :: struct {
     min_filter:     Texture_Filter,
     mipmap_mode:    Texture_Mipmap_Mode,
@@ -30,6 +37,11 @@ Texture_Sampler_Options :: struct {
     min_lod:        f32,
     max_lod:        Maybe(f32),
     lod_bias:       f32,
+}
+
+Texture_Options :: struct {
+	colorspace: Texture_Colorspace,
+	mip_levels: Maybe(int),
 }
 
 Texture_Fallback :: enum {
@@ -66,6 +78,7 @@ default_texture_sampler_options :: proc() -> Texture_Sampler_Options {
 	return {
 		min_filter = .Linear,
 		mipmap_mode = .Linear,
+		max_anisotropy = 4.0,
 	}
 }
 

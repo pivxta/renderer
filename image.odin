@@ -1,5 +1,6 @@
 package main
 import "core:mem"
+import "core:math"
 import "core:slice"
 import "core:strings"
 import "base:runtime"
@@ -121,12 +122,19 @@ image_destroy :: proc(image: ^Image) {
 	image^ = {}
 }
 
+@(require_results)
 image_pixels :: proc($T: typeid, image: ^Image) -> []T {
 	assert(image != nil)
 	assert(size_of(T) == image_format_texel_size(image.format))
 	return slice.reinterpret([]T, image.bytes)
 }
 
+@(require_results)
+image_get_max_mip_levels :: proc(image: Image) -> int {
+	return int(math.floor(math.log2(f32(max(image.width, image.height))))) + 1
+}
+
+@(require_results)
 image_is_valid :: proc(image: Image) -> bool {
 	return image.width > 0 &&
 	       image.height > 0 &&
@@ -164,8 +172,9 @@ image_format_matches_vk :: proc(fmt: Image_Format, vkfmt: vk.Format) -> bool {
 	}
 }
 
-image_format_to_vk :: proc(fmt: Image_Format, srgb: bool) -> vk.Format {
-	if srgb {
+image_format_to_vk :: proc(fmt: Image_Format, colorspace: Texture_Colorspace) -> vk.Format {
+	switch colorspace {
+	case .Srgb:
 		switch fmt {
 		case .R_U8: return .R8_UNORM
 		case .Rg_U8: return .R8G8_UNORM 
@@ -174,7 +183,7 @@ image_format_to_vk :: proc(fmt: Image_Format, srgb: bool) -> vk.Format {
 		case .Rg_F16: return .R16G16_SFLOAT
 		case .Rgba_F16: return .R16G16B16A16_SFLOAT
 		}
-	} else {
+	case .Linear:
 		switch fmt {
 		case .R_U8: return .R8_UNORM
 		case .Rg_U8: return .R8G8_UNORM 

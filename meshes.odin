@@ -28,12 +28,13 @@ Mesh_Record_Data :: struct {
 
 Mesh_Slot :: struct {
 	handle: Mesh_Handle,
+	loaded: bool,
 	index_count: u32,
 	vertex_count: u32,
 	attributes: Vertex_Attribute_Set,
 	indices: Maybe(Pool_Subbuffer(u32)),
 	record: Pool_Subbuffer(Mesh_Record_Data),
-	data: Pool_Subbuffer(byte),
+	data: Pool_Subbuffer(u8),
 }
 
 @(private="file")
@@ -42,6 +43,24 @@ Pending_Free :: struct {
 	indices: Maybe(Pool_Subbuffer(u32)),
 	record: Pool_Subbuffer(Mesh_Record_Data),
 	data: Pool_Subbuffer(byte),
+}
+
+@(private="file")
+MESH_INDICES_USAGE :: Resource_Usage {
+    stages = {.INDEX_INPUT},
+    access = {.INDEX_READ},
+}
+
+@(private="file")
+MESH_DATA_USAGE :: Resource_Usage {
+    stages = {.VERTEX_SHADER},
+    access = {.SHADER_STORAGE_READ},
+}
+
+@(private="file")
+MESH_RECORD_USAGE :: Resource_Usage {
+    stages = {.VERTEX_SHADER},
+    access = {.SHADER_STORAGE_READ},
 }
 
 @(require_results)
@@ -89,12 +108,11 @@ meshes_destroy :: proc(meshes: ^Meshes, device: Device) {
 	meshes^ = {}
 }
 
-/*
 @(require_results)
-meshes_reserve :: proc(meshes: ^Meshes, mesh: Mesh) -> Mesh_Handle {
-	// TODO
+meshes_reserve :: proc(meshes: ^Meshes) -> Mesh_Handle {
+	assert(meshes != nil)
+	return handle_map.add(&meshes.handle_map, {loaded = false})
 }
-*/
 
 @(require_results)
 meshes_add :: proc(
@@ -105,13 +123,12 @@ meshes_add :: proc(
 ) -> (handle: Mesh_Handle, err: Mesh_Error) {
 	assert(meshes != nil)
 
-	slot := allocate_mesh(meshes, mesh) or_return
-	if err = upload_mesh(meshes, upload_queue, frame_ring, slot, mesh); err != nil {
-		defer_free(meshes, frame_ring, slot)
+	handle = meshes_reserve(meshes)
+	if err = meshes_replace(meshes, upload_queue, frame_ring, handle, mesh); err != nil {
+		meshes_remove(meshes, frame_ring, handle)
 		return {}, err
 	}
-	
-	return handle_map.add(&meshes.handle_map, slot), nil
+	return handle, nil
 }
 
 meshes_replace :: proc(
@@ -180,6 +197,7 @@ allocate_mesh :: proc(meshes: ^Meshes, mesh: Mesh) -> (slot: Mesh_Slot, err: Mes
 	}
 
 	return {
+		loaded = true,
 		index_count = u32(index_count),
 		vertex_count = u32(mesh.vertex_count),
 		attributes = mesh_attribute_set(mesh),
@@ -193,7 +211,7 @@ allocate_mesh :: proc(meshes: ^Meshes, mesh: Mesh) -> (slot: Mesh_Slot, err: Mes
 upload_mesh :: proc(
 	meshes: ^Meshes, 
 	upload_queue: ^Upload_Queue,
-	frame_ring: Frame_Ring,
+	frame_ring: Frame_Ring, 
 	slot: Mesh_Slot,
 	mesh: Mesh,
 ) -> (err: Mesh_Error) {
@@ -202,6 +220,8 @@ upload_mesh :: proc(
 			upload_queue, 
 			frame_ring, 
 			slot.indices.?,
+			slot.indices.?.count,
+			MESH_INDICES_USAGE,
 		)
 		if !staging_indices_ok {
 			return .Out_Of_Staging_Memory
@@ -220,7 +240,9 @@ upload_mesh :: proc(
 	staging_data, staging_data_ok := upload_subbuffer_reserve(
 		upload_queue, 
 		frame_ring,
-		slot.data,
+		slot.data, 
+		slot.data.count,
+		MESH_DATA_USAGE,
 	)
 	if !staging_data_ok {
 		return .Out_Of_Staging_Memory
@@ -243,7 +265,8 @@ upload_mesh :: proc(
 	staging_record, staging_record_ok := upload_subbuffer_reserve(
 		upload_queue,
 		frame_ring,
-		slot.record,
+		slot.record, 1, 
+		MESH_RECORD_USAGE,
 	)
 	if !staging_record_ok {
 		return .Out_Of_Staging_Memory
@@ -271,12 +294,14 @@ meshes_remove :: proc(meshes: ^Meshes, frame_ring: Frame_Ring, handle: Mesh_Hand
 
 @(private="file")
 defer_free :: proc(meshes: ^Meshes, frame_ring: Frame_Ring, slot: Mesh_Slot) {
-	queue.enqueue(&meshes.pending_frees, {
-		retire_value = frame_ring.timeline_value + 1,
-		indices = slot.indices,
-		record = slot.record,
-		data = slot.data,
-	})
+	if slot.loaded {
+		queue.enqueue(&meshes.pending_frees, {
+			retire_value = frame_ring.timeline_value + 1,
+			indices = slot.indices,
+			record = slot.record,
+			data = slot.data,
+		})
+	}
 }
 
 @(require_results)
@@ -286,7 +311,7 @@ meshes_get_index_buffer :: proc(meshes: Meshes) -> Buffer {
 
 @(require_results)
 meshes_get_info :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> (Mesh_Info, bool) {
-	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok {
+	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok && slot.loaded {
 		first_index := u32(0)
 		if indices, indices_ok := slot.indices.?; indices_ok {
 			assert(indices.offset % size_of(u32) == 0)
@@ -312,8 +337,11 @@ meshes_is_indexed :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> bool {
 }
 
 @(require_results)
-meshes_is_valid_handle :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> bool {
-	return handle_map.is_valid(&meshes.handle_map, handle)
+meshes_is_loaded :: proc(meshes: ^Meshes, handle: Mesh_Handle) -> bool {
+	if slot, ok := handle_map.get(&meshes.handle_map, handle); ok {
+		return slot.loaded
+	}
+	return false
 }
 
 meshes_destroy_pending :: proc(meshes: ^Meshes, finished_value: u64) {

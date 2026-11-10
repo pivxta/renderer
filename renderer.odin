@@ -6,10 +6,11 @@ import "core:mem/virtual"
 import "base:runtime"
 import vk "vendor:vulkan"
 
-STAGING_CAPACITY :: 128 * 1024 * 1024
-SCRATCH_CAPACITY :: 16 * 1024 * 1024
-MESH_POOL_CAPACITY :: 128 * 1024 * 1024
-INDEX_POOL_CAPACITY :: 128 * 1024 * 1024
+STAGING_CAPACITY :: 128 * mem.Megabyte
+SCRATCH_CAPACITY :: 64 * mem.Megabyte
+MATERIAL_POOL_CAPACITY :: 64 * mem.Megabyte
+MESH_POOL_CAPACITY :: 128 * mem.Megabyte
+INDEX_POOL_CAPACITY :: 128 * mem.Megabyte
 ARENA_CAPACITY :: 128 * mem.Megabyte
 TEXTURES_CAPACITY :: 65536
 
@@ -19,8 +20,10 @@ Renderer :: struct {
 	surface: Surface,
 	frame_ring: Frame_Ring,
 	upload_queue: Upload_Queue,
+	mipgen_queue: Mipgen_Queue,
 	meshes: Meshes,
 	textures: Textures,
+	materials: Materials,
 	arena: virtual.Arena,
 
 	texture_handle: Texture_Handle,
@@ -43,6 +46,7 @@ Renderer_Error :: union #shared_nil {
 	Device_Error,
 	Surface_Error,
 	Frame_Ring_Error,
+	Materials_Create_Error,
 	Renderer_Draw_Error,
 	Texture_Error,
 	Buffer_Error,
@@ -62,6 +66,7 @@ Vertex_Data :: struct {
 
 Instance_Data :: struct {
 	object_to_world: matrix[3, 4]f32,
+	material_address: Device_Address,
 }
 
 Point_Light_Data :: struct {
@@ -135,10 +140,15 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	device_init(&r.device, r.instance, r.surface) or_return
 	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
 	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
+	mipgen_queue_init(&r.mipgen_queue)
+
 	meshes_init(&r.meshes, r.device, MESH_POOL_CAPACITY, INDEX_POOL_CAPACITY) or_return
+	materials_init(&r.materials, r.device, MATERIAL_POOL_CAPACITY) or_return
 	textures_init(
 		&r.textures, r.device, 
-		&r.upload_queue, r.frame_ring, 
+ 		&r.mipgen_queue,
+		&r.upload_queue, 
+		r.frame_ring, 
 		TEXTURES_CAPACITY,
 	) or_return
 
@@ -162,7 +172,9 @@ renderer_destroy :: proc (r: ^Renderer) {
 	destroy_depth_texture(r)
 
 	textures_destroy(&r.textures, r.device)
+	materials_destroy(&r.materials, r.device)
 	meshes_destroy(&r.meshes, r.device)
+	mipgen_queue_destroy(&r.mipgen_queue)
 	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
 	surface_destroy(&r.surface, r.instance, r.device)
@@ -170,6 +182,11 @@ renderer_destroy :: proc (r: ^Renderer) {
 	instance_destroy(&r.instance)
 	virtual.arena_destroy(&r.arena)
 	r^ = {}
+}
+
+@(require_results)
+renderer_reserve_mesh :: proc(r: ^Renderer) -> Mesh_Handle {
+	return meshes_reserve(&r.meshes)
 }
 
 @(require_results)
@@ -198,13 +215,16 @@ renderer_reserve_texture :: proc(
 renderer_add_texture :: proc(
 	r: ^Renderer, 
 	image: Image, 
-	srgb := true,
+	options := Texture_Options {},
 	fallback := Texture_Fallback.Color_Error,
 ) -> (Texture_Handle, Texture_Error) {
 	return textures_add(
 		&r.textures, r.device, 
-		&r.upload_queue, r.frame_ring,
-		image, srgb, fallback,
+		&r.mipgen_queue,
+		&r.upload_queue, 
+		r.frame_ring,
+		image, options, 
+		fallback,
 	)
 }
 
@@ -212,12 +232,14 @@ renderer_replace_texture :: proc(
 	r: ^Renderer, 
 	handle: Texture_Handle, 
 	image: Image,
-	srgb := true,
+	options := Texture_Options {},
 ) -> Texture_Error {
 	return textures_replace(
 		&r.textures, r.device,
-		&r.upload_queue, r.frame_ring,
-		handle, image, srgb,
+		&r.mipgen_queue,
+		&r.upload_queue, 
+		r.frame_ring,
+		handle, image, options,
 	)
 }
 
@@ -229,19 +251,37 @@ renderer_set_texture_sampler_options :: proc(r: ^Renderer, options: Texture_Samp
 	textures_set_sampler_options(&r.textures, options)
 }
 
+renderer_add_material :: proc(r: ^Renderer, material: Material) -> (Material_Handle, Material_Error) {
+	return materials_add(&r.materials, material)
+}
+
+renderer_replace_material :: proc(
+	r: ^Renderer, 
+	handle: Material_Handle, 
+	material: Material,
+) -> Material_Error {
+	return materials_replace(&r.materials, r.frame_ring, handle, material)
+}
+
+renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
+	materials_remove(&r.materials, r.frame_ring, handle)
+}
+
 @(require_results)
 renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	free_all(virtual.arena_allocator(&r.arena))
 	context.temp_allocator = virtual.arena_allocator(&r.arena)
+
+	textures_reconfigure_dirty_samplers(&r.textures, r.device) or_return
+	updates := textures_take_updates(&r.textures, context.temp_allocator)
+	materials_mark_dirty(&r.materials, updates[:])
+	materials_update_dirty(&r.materials, &r.textures, r.device, r.frame_ring)
 
 	frame_context := frame_begin(&r.frame_ring, r.device) or_return
 	frame_data, ok := write_frame_data(r, frame_context, scene)
 	if !ok {
 		return Renderer_Draw_Error.Out_Of_Scratch_Memory
 	}
-
-	clear(&r.textures.updated)
-	textures_reconfigure_dirty_samplers(&r.textures, r.device) or_return
 
 	surface_texture, acquire_result := surface_acquire_texture(
 		r.surface, 
@@ -265,9 +305,11 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	}
 
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
+	mipgen_queue_record_commands(&r.mipgen_queue, frame_context.command_buffer)
 	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
 
 	textures_destroy_pending(&r.textures, r.device, frame_context.finished_timeline_value)
+	materials_destroy_pending(&r.materials, frame_context.finished_timeline_value)
 	meshes_destroy_pending(&r.meshes, frame_context.finished_timeline_value)
 	upload_queue_retire(&r.upload_queue, frame_context.finished_timeline_value)
 	upload_queue_flush(&r.upload_queue, r.device) or_return
@@ -362,7 +404,7 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 
 	scratch_objects := make([dynamic]Object_Id, 0, len(scene.mesh_objects), context.temp_allocator)
 	for mesh_object, index in scene.mesh_objects {
-		if meshes_is_valid_handle(&renderer.meshes, mesh_object.mesh) {
+		if meshes_is_loaded(&renderer.meshes, mesh_object.mesh) {
 			pipeline := u16(0)
 			indexed := meshes_is_indexed(&renderer.meshes, mesh_object.mesh)
 			draw_key := make_draw_key(pipeline, indexed, mesh_object.mesh)
@@ -427,9 +469,10 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 
 	data.instances = scratch_make(frame.scratch, []Instance_Data, len(scratch_objects)) or_return
 	for scratch_object, i in scratch_objects {
-		object := scene.mesh_objects[scratch_object.object_index]	
+		object := scene.mesh_objects[scratch_object.object_index]
 		data.instances.data[i] = Instance_Data {
 			object_to_world = affine_to_matrix3x4(object.transform),
+			material_address = materials_get_address(&renderer.materials, object.material),
 		}
 	}
 
