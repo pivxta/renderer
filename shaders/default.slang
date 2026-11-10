@@ -95,7 +95,7 @@ struct VertexOutput {
     float3 world_position;
     float3 world_normal;
     float2 tex_coords;
-    nointerpolation uint instance_id;
+    nointerpolation uint instance_index;
 }
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
@@ -108,7 +108,8 @@ VertexOutput vertex_main(
 ) {
     VertexOutput output;
     var mesh = constants.draws[draw_id].mesh_record;
-    var instance = constants.instances[constants.draws[draw_id].instance_offset + instance_id];
+    var instance_index = constants.draws[draw_id].instance_offset + instance_id;
+    var instance = constants.instances[instance_index];
 
     var vertex_position = mesh_load_float(mesh, vertex_id, ATTR_POSITION, float4(0, 0, 0, 1)).xyz;
     var vertex_tex_coord = mesh_load_float(mesh, vertex_id, ATTR_TEX_COORD_0, float4(0)).xy;
@@ -122,7 +123,7 @@ VertexOutput vertex_main(
     output.world_position = world_position;
     output.world_normal = world_normal;
     output.tex_coords = vertex_tex_coord;
-    output.instance_id = instance_id;
+    output.instance_index = instance_index;
     return output;
 }
 
@@ -176,7 +177,7 @@ float4 unlit(
 ) {
     var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
     var color = material.color_factor.rgb;
-    if ((material.flags & PBR_MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
+    if ((material.flags & UNLIT_MATERIAL_HAS_COLOR_TEXTURE) != 0) {
         var texture = textures[NonUniformResourceIndex(material.color_index)];
         color *= texture.Sample(sampler, tex_coords).rgb;
     }
@@ -185,8 +186,8 @@ float4 unlit(
 
 [shader("fragment")]
 float4 fragment_main(VertexOutput input): SV_Target {
-    var material_type = constants.instances[input.instance_id].material_type;
-    var material_address = constants.instances[input.instance_id].material_address;
+    var material_type = constants.instances[input.instance_index].material_type;
+    var material_address = constants.instances[input.instance_index].material_address;
     switch (material_type) {
     case MATERIAL_TYPE_UNLIT: 
         return unlit(

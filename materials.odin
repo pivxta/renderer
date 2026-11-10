@@ -546,3 +546,8 @@ materials_get_info :: proc(
 	}
 	return {}, false
 }
+
+materials_is_valid :: proc(materials: ^Materials, handle: Material_Handle) -> bool {
+	assert(materials != nil)
+	return handle_map.is_valid(&materials.handle_map, handle)
+}

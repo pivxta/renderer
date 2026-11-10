@@ -283,7 +283,7 @@ renderer_replace_material :: proc(
 	handle: Material_Handle, 
 	params: $P,
 ) -> Material_Error {
-	return materials_replace(&r.materials, r.frame_ring, handle, material)
+	return materials_replace(&r.materials, r.frame_ring, handle, params)
 }
 
 renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
@@ -445,7 +445,8 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 
 	scratch_objects := make([dynamic]Object_Id, 0, len(scene.mesh_objects), context.temp_allocator)
 	for mesh_object, index in scene.mesh_objects {
-		if meshes_is_loaded(&renderer.meshes, mesh_object.mesh) {
+		if meshes_is_loaded(&renderer.meshes, mesh_object.mesh) &&
+		   materials_is_valid(&renderer.materials, mesh_object.material) {
 			pipeline := u16(0)
 			indexed := meshes_is_indexed(&renderer.meshes, mesh_object.mesh)
 			draw_key := make_draw_key(pipeline, indexed, mesh_object.mesh)
@@ -511,16 +512,11 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 	data.instances = scratch_make(frame.scratch, []Instance_Data, len(scratch_objects)) or_return
 	for scratch_object, i in scratch_objects {
 		object := scene.mesh_objects[scratch_object.object_index]
-
-		info, info_ok := materials_get_info(&renderer.materials, object.material)
-		if !info_ok {
-			continue
-		}
-
+		material, _ := materials_get_info(&renderer.materials, object.material)
 		data.instances.data[i] = Instance_Data {
 			object_to_world = affine_to_matrix3x4(object.transform),
-			material_type = info.type,
-			material_address = info.address,
+			material_type = material.type,
+			material_address = material.address,
 		}
 	}
 
