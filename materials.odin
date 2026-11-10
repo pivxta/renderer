@@ -371,6 +371,17 @@ materials_update_dirty :: proc(
 	append(&materials.dirty, ..retry[:])
 }
 
+materials_get :: proc(
+	materials: ^Materials, 
+	handle: Material_Handle,
+) -> (Material, bool) {
+	assert(materials != nil)
+	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
+		return slot.params, true
+	}
+	return {}, false
+}
+
 materials_get_address :: proc(
 	materials: ^Materials, 
 	handle: Material_Handle,

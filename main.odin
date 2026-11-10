@@ -105,9 +105,9 @@ main :: proc() {
 	}
 
 	rocks_material, _ := renderer_add_material(&renderer, Material {
-		base_color_factor = {1.0, 1.0, 1.0, 1.0},
+		base_color_factor = {0.5, 0.5, 1.0, 1.0},
 		base_color_texture = rocks_texture,
-		sampler = .Nearest_Repeat,
+		sampler = .Linear_Repeat,
 	})
 
 	rows := 10

@@ -17,7 +17,7 @@ Material_Fallback :: enum {
 }
 
 Material :: struct {
-	base_color_factor: [4]f32,
+	base_color_factor: Maybe([4]f32),
 	base_color_texture: Maybe(Texture_Handle),
 	sampler: Texture_Sampler,
 }
@@ -56,7 +56,7 @@ resolve_material :: proc(textures: ^Textures, params: Material) -> Material_Data
 	}
 
 	return {
-		base_color_factor = params.base_color_factor,
+		base_color_factor = params.base_color_factor.? or_else {1.0, 1.0, 1.0, 1.0},
 		base_color_texture = base_color_index,
 		sampler = params.sampler,
 		flags = flags,

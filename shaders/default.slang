@@ -82,7 +82,7 @@ struct VertexOutput {
     float3 world_position;
     float3 world_normal;
     float2 tex_coords;
-    nointerpolation Material* material;
+    nointerpolation uint instance_id;
 }
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
@@ -109,7 +109,7 @@ VertexOutput vertex_main(
     output.world_position = world_position;
     output.world_normal = world_normal;
     output.tex_coords = vertex_tex_coord;
-    output.material = instance.material;
+    output.instance_id = instance_id;
     return output;
 }
 
@@ -121,11 +121,12 @@ Texture2D[] textures;
 
 [shader("fragment")]
 float4 fragment_main(VertexOutput input): SV_Target {
-    var sampler = samplers[NonUniformResourceIndex(input.material.sampler_index)];
+    var material = constants.instances[input.instance_id].material;
 
-    var albedo = input.material.base_color_factor.rgb;
-    if ((input.material.flags & MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
-        var texture = textures[NonUniformResourceIndex(input.material.base_color_index)];
+    var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
+    var albedo = material.base_color_factor.rgb;
+    if ((material.flags & MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
+        var texture = textures[NonUniformResourceIndex(material.base_color_index)];
         albedo *= texture.Sample(sampler, input.tex_coords).rgb;
     }
     

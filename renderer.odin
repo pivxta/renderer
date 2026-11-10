@@ -267,6 +267,10 @@ renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
 	materials_remove(&r.materials, r.frame_ring, handle)
 }
 
+renderer_get_material :: proc(r: ^Renderer, handle: Material_Handle) -> (Material, bool) {
+	return materials_get(&r.materials, handle)
+}
+
 @(require_results)
 renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	free_all(virtual.arena_allocator(&r.arena))
