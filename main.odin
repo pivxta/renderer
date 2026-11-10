@@ -96,6 +96,13 @@ main :: proc() {
 		log.error("Failed to create cube mesh")
 	}
 
+	ball := make_sphere()
+	ball_mesh, ball_err := renderer_add_mesh(&renderer, ball)
+	delete_mesh(ball)
+	if ball_err != nil {
+		log.error("Failed to create ball mesh")
+	}
+
 	rocks_texture: Texture_Handle
 	if rocks_image, rocks_err := image_load_from_file("assets/rocksalbedo.jpg"); rocks_err == nil {
 		rocks_texture, _ = renderer_add_texture(&renderer, rocks_image)
@@ -104,9 +111,14 @@ main :: proc() {
 		log.error("Failed to load texture: %v", rocks_image)
 	}
 
-	rocks_material, _ := renderer_add_material(&renderer, Material {
+	rocks_material, _ := renderer_add_material(&renderer, Pbr_Material {
 		base_color_factor = {0.5, 0.5, 1.0, 1.0},
 		base_color_texture = rocks_texture,
+		sampler = .Linear_Repeat,
+	})
+
+	ball_material, _ := renderer_add_material(&renderer, Unlit_Material {
+		color_factor = {1.0, 1.0, 0.5, 1.0},
 		sampler = .Linear_Repeat,
 	})
 
@@ -120,8 +132,8 @@ main :: proc() {
 					(f32(i) - f32(rows) * 0.5 + 0.5) * spacing, -2.0, 
 					(f32(j) - f32(columns) * 0.5 + 0.5) * spacing,
 				}),
-				mesh = cube_mesh,
-				material = rocks_material,
+				mesh = cube_mesh if (i + j) % 2 == 0 else ball_mesh,
+				material = rocks_material if (i + j) % 2 == 0 else ball_material,
 			})
 		}
 	}

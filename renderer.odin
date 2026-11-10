@@ -67,6 +67,7 @@ Vertex_Data :: struct {
 Instance_Data :: struct {
 	object_to_world: matrix[3, 4]f32,
 	material_address: Device_Address,
+	material_type: Material_Type_Id,
 }
 
 Point_Light_Data :: struct {
@@ -151,6 +152,28 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 		r.frame_ring, 
 		TEXTURES_CAPACITY,
 	) or_return
+
+	renderer_register_material_type(
+		r, Pbr_Material, Pbr_Material_Data,
+		name = "Pbr_Material",
+		resolve = resolve_pbr,
+		properties = {
+			blend_mode = .Opaque,
+			alpha_test = false,
+			double_sided = false,
+		},
+	)
+
+	renderer_register_material_type(
+		r, Unlit_Material, Unlit_Material_Data,
+		name = "Unlit_Material",
+		resolve = resolve_unlit,
+		properties = {
+			blend_mode = .Opaque,
+			alpha_test = false,
+			double_sided = false,
+		},
+	)
 
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
@@ -251,14 +274,14 @@ renderer_set_texture_sampler_options :: proc(r: ^Renderer, options: Texture_Samp
 	textures_set_sampler_options(&r.textures, options)
 }
 
-renderer_add_material :: proc(r: ^Renderer, material: Material) -> (Material_Handle, Material_Error) {
-	return materials_add(&r.materials, material)
+renderer_add_material :: proc(r: ^Renderer, params: $P) -> (Material_Handle, Material_Error) {
+	return materials_add(&r.materials, params)
 }
 
 renderer_replace_material :: proc(
 	r: ^Renderer, 
 	handle: Material_Handle, 
-	material: Material,
+	params: $P,
 ) -> Material_Error {
 	return materials_replace(&r.materials, r.frame_ring, handle, material)
 }
@@ -267,8 +290,22 @@ renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
 	materials_remove(&r.materials, r.frame_ring, handle)
 }
 
-renderer_get_material :: proc(r: ^Renderer, handle: Material_Handle) -> (Material, bool) {
-	return materials_get(&r.materials, handle)
+renderer_get_material :: proc(
+	r: ^Renderer, 
+	handle: Material_Handle, 
+	$P: typeid
+) -> (P, Material_Error) {
+	return materials_get(&r.materials, handle, P)
+}
+
+renderer_register_material_type :: proc(
+	r: ^Renderer,
+	$P, $D: typeid,
+	name: string,
+	properties: Material_Properties,
+	resolve: proc(^Textures, P) -> D,
+) -> Material_Type_Id {
+	return materials_register_type(&r.materials, P, D, name, properties, resolve)
 }
 
 @(require_results)
@@ -474,9 +511,16 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 	data.instances = scratch_make(frame.scratch, []Instance_Data, len(scratch_objects)) or_return
 	for scratch_object, i in scratch_objects {
 		object := scene.mesh_objects[scratch_object.object_index]
+
+		info, info_ok := materials_get_info(&renderer.materials, object.material)
+		if !info_ok {
+			continue
+		}
+
 		data.instances.data[i] = Instance_Data {
 			object_to_world = affine_to_matrix3x4(object.transform),
-			material_address = materials_get_address(&renderer.materials, object.material),
+			material_type = info.type,
+			material_address = info.address,
 		}
 	}
 

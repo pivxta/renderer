@@ -1,26 +1,54 @@
 package main
 import "base:runtime"
+import "core:reflect"
 import "core:log"
-import "core:slice"
 import "core:container/queue"
 import "core:container/handle_map"
+@(require) import "core:slice"
+@(require) import "core:mem"
+@(require) import "core:strings"
 
 Materials :: struct {
-	pool:          Pool_Buffer,
-	allocator:     runtime.Allocator,
-	pending_frees: queue.Queue(Pending_Free),
-	handle_map:    handle_map.Dynamic_Handle_Map(Material_Slot, Material_Handle),
-	dirty:         [dynamic]Material_Handle,
-	dependents:    [dynamic]Texture_Dependents,
+	pool:           Pool_Buffer,
+	allocator:      runtime.Allocator,
+	pending_frees:  queue.Queue(Pending_Free),
+	handle_map:     handle_map.Dynamic_Handle_Map(Material_Slot, Material_Handle),
+	dirty:          [dynamic]Material_Handle,
+	dependents:     [dynamic]Texture_Dependents,
+	types:          [dynamic]Material_Type,
+	type_by_params: map[typeid]Material_Type_Id,
+}
 
-	default_material: Material_Handle,
-	error_material: Material_Handle,
+Material_Info :: struct {
+	type: Material_Type_Id,
+	address: Device_Address,
 }
 
 Materials_Create_Error :: union #shared_nil {
 	Buffer_Error,
 	Material_Error,
 }
+
+Material_Type_Id :: distinct u32
+
+@(private="file")
+Material_Type :: struct {
+	name:         string,
+	params_type:  typeid,
+	data_size:    int,
+	data_align:   int,
+	properties:   Material_Properties,
+	resolve_proc: rawptr,
+	resolve:      Resolve_Trampoline,
+}
+
+@(private="file")
+Resolve_Trampoline :: #type proc(
+	textures: ^Textures,
+	out: []byte,
+	params: rawptr,
+	resolve: rawptr,
+)
 
 @(private="file")
 Texture_Dependents :: struct {
@@ -50,8 +78,9 @@ Material_Dirty_Level :: enum {
 @(private="file")
 Material_Slot :: struct {
 	handle:       Material_Handle,
-	params:       Material,
-	data:         Pool_Subbuffer(u8),
+	type:         Material_Type_Id,
+	params:       []byte,
+	data:         Pool_Subbuffer(byte),
 	dependencies: [dynamic]Material_Dependency,
 	dirty:        Material_Dirty_Level,
 	fresh:        bool,
@@ -60,7 +89,7 @@ Material_Slot :: struct {
 @(private="file")
 Pending_Free :: struct {
 	retire_value: u64,
-	data:         Pool_Subbuffer(u8),
+	data:         Pool_Subbuffer(byte),
 }
 
 @(require_results)
@@ -83,6 +112,8 @@ materials_init :: proc(
 	materials.allocator = allocator
 	materials.dependents = make([dynamic]Texture_Dependents, allocator)
 	materials.dirty = make([dynamic]Material_Handle, allocator)
+	materials.types = make([dynamic]Material_Type, allocator)
+	materials.type_by_params = make(map[typeid]Material_Type_Id, allocator)
 
 	handle_map.dynamic_init(&materials.handle_map, allocator)
 	queue.init(&materials.pending_frees, queue.DEFAULT_CAPACITY, allocator)
@@ -91,14 +122,16 @@ materials_init :: proc(
 		materials_destroy(materials, device)
 	}
 
-	materials.default_material = materials_add(materials, get_material_fallback(.Default)) or_return
-	materials.error_material = materials_add(materials, get_material_fallback(.Error)) or_return
 	return nil
 }
 
 materials_destroy :: proc(materials: ^Materials, device: Device) {
 	if materials == nil {
 		return
+	}
+
+	for type in materials.types {
+		delete(type.name, materials.allocator)
 	}
 
 	for dependents in materials.dependents {
@@ -108,10 +141,13 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 	iterator := handle_map.iterator_make(&materials.handle_map)
 	for slot, _ in handle_map.iterate(&iterator) {
 		delete(slot.dependencies)
+		delete(slot.params, materials.allocator)
 	}
 
 	delete(materials.dirty)
 	delete(materials.dependents)
+	delete(materials.types)
+	delete(materials.type_by_params)
 	handle_map.dynamic_destroy(&materials.handle_map)
 	queue.destroy(&materials.pending_frees)
 	pool_destroy(&materials.pool, device)
@@ -120,11 +156,12 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 
 materials_add :: proc(
 	materials: ^Materials, 
-	material: Material,
+	params: $P,
 ) -> (handle: Material_Handle, err: Material_Error) {
 	assert(materials != nil)
 
-	data, ok := pool_make(&materials.pool, []u8, size_of(Material_Data))
+	type, type_id := get_params_material_type(materials, P) or_return
+	data, ok := pool_make(&materials.pool, []byte, type.data_size, type.data_align)
 	if !ok {
 		return {}, .Out_Of_Gpu_Memory
 	}
@@ -133,7 +170,8 @@ materials_add :: proc(
 		dirty = .Params,
 		fresh = true,
 		data = data,
-		params = material,
+		type = type_id,
+		params = make_params(params, materials.allocator),
 		dependencies = make([dynamic]Material_Dependency, materials.allocator),
 	})
 
@@ -145,23 +183,25 @@ materials_replace :: proc(
 	materials: ^Materials, 
 	frame_ring: Frame_Ring,
 	handle: Material_Handle, 
-	material: Material,
+	params: $P,
 ) -> Material_Error {
 	assert(materials != nil)
-	assert(handle != materials.default_material && handle != materials.error_material)
 	
 	slot, slot_ok := handle_map.get(&materials.handle_map, handle)
 	if !slot_ok {
 		return .Invalid_Handle
 	}
 	
-	new_data, new_data_ok := pool_make(&materials.pool, []u8, size_of(Material_Data))
+	type, type_id := get_params_material_type(materials, P) or_return
+	new_data, new_data_ok := pool_make(&materials.pool, []byte, type.data_size, type.data_align)
 	if !new_data_ok {
 		return .Out_Of_Gpu_Memory
 	}
 
 	defer_free(materials, frame_ring, slot)
-	slot.params = material
+	delete(slot.params, materials.allocator)
+	slot.params = make_params(params, materials.allocator)
+	slot.type = type_id
 	slot.data = new_data
 	slot.fresh = true
 	mark(materials, slot, .Params)
@@ -169,13 +209,34 @@ materials_replace :: proc(
 	return nil
 }
 
+@(private="file", require_results)
+get_params_material_type :: proc(
+	materials: ^Materials, 
+	$P: typeid
+) -> (^Material_Type, Material_Type_Id, Material_Error) {
+	type_id, ok := materials.type_by_params[P]
+	if !ok {
+		return nil, 0, .Type_Not_Registered
+	}
+
+	return &materials.types[type_id], type_id, nil
+}
+
+@(private="file", require_results)
+make_params :: proc(params: $P, allocator := context.allocator) -> []byte {
+	params_bytes := make([]byte, size_of(P), allocator)
+	params_typed := slice.reinterpret([]P, params_bytes)
+	params_typed[0] = params
+	return params_bytes
+}
+
 materials_remove :: proc(materials: ^Materials, frame_ring: Frame_Ring, handle: Material_Handle) {
 	assert(materials != nil)
-	assert(handle != materials.default_material && handle != materials.error_material)
 
 	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
 		unlink_all(materials, slot)
 		delete(slot.dependencies)
+		delete(slot.params, materials.allocator)
 		defer_free(materials, frame_ring, slot)
 		handle_map.remove(&materials.handle_map, handle)
 	}
@@ -331,10 +392,12 @@ materials_update_dirty :: proc(
 		if !ok {
 			continue
 		}
-		
+
+		type := &materials.types[slot.type]
+
 		if slot.dirty >= .Textures {
 			if !slot.fresh {
-				new_data, new_data_ok := pool_make(&materials.pool, []u8, size_of(Material_Data))
+				new_data, new_data_ok := pool_make(&materials.pool, []u8, type.data_size, type.data_align)
 				if !new_data_ok {
 					log.error("Out of GPU memory for materials")
 					append(&retry, material)
@@ -344,9 +407,10 @@ materials_update_dirty :: proc(
 				slot.data = new_data
 			}
 
-			material_data := resolve_material(textures, slot.params)
-			typed_data := slice.reinterpret([]Material_Data, slot.data.mapped)
-			typed_data[0] = material_data
+			data := make_aligned([]byte, type.data_size, type.data_align, context.temp_allocator)
+			type.resolve(textures, data, raw_data(slot.params), type.resolve_proc)
+			copy(slot.data.mapped, data)
+
 			if err := pool_subbuffer_flush(slot.data, device); err != nil {
 				log.error("Failed to flush material data")
 			}
@@ -354,7 +418,7 @@ materials_update_dirty :: proc(
 
 		if slot.dirty >= .Params {
 			unlink_all(materials, slot)
-			resolve_texture_dependencies(&deps, slot.params)
+			resolve_texture_dependencies(&deps, slot.params, type.params_type)
 			for dep in deps {
 				if textures_is_valid(textures, dep) {
 					link(materials, slot, dep)
@@ -371,27 +435,114 @@ materials_update_dirty :: proc(
 	append(&materials.dirty, ..retry[:])
 }
 
+@(private="file")
+resolve_texture_dependencies :: proc(
+	out: ^[dynamic]Texture_Handle, 
+	params: []byte, 
+	params_type: typeid
+) {
+	collect_textures(out, transmute(any)runtime.Raw_Any{
+		data = raw_data(params), 
+		id = params_type,
+	})	
+}
+
+@(private="file")
+collect_textures :: proc(out: ^[dynamic]Texture_Handle, value: any) {
+    if value.data == nil {
+        return
+    }
+
+    if value.id == typeid_of(Texture_Handle) {
+        handle := (^Texture_Handle)(value.data)^
+        if handle != {} {
+            append(out, handle)
+        }
+        return
+    }
+
+    #partial switch v in runtime.type_info_base(type_info_of(value.id)).variant {
+    case runtime.Type_Info_Union:
+        collect_textures(out, reflect.get_union_variant(value))
+    case runtime.Type_Info_Struct:
+        for i in 0..<reflect.struct_field_count(value.id) {
+            field := reflect.struct_field_at(value.id, i)
+            collect_textures(out, reflect.struct_field_value(value, field))
+        }
+    case runtime.Type_Info_Array, runtime.Type_Info_Enumerated_Array,
+         runtime.Type_Info_Slice, runtime.Type_Info_Dynamic_Array:
+        for i in 0..<reflect.length(value) {
+            collect_textures(out, reflect.index(value, i))
+        }
+    }
+}
+
+materials_register_type :: proc(
+	materials: ^Materials,
+	$P, $D: typeid,
+	name: string,
+	properties: Material_Properties,
+	resolve: proc(^Textures, P) -> D,
+) -> Material_Type_Id {
+	assert(materials != nil)
+	assert(P not_in materials.type_by_params, "Material type already registered")
+
+	id := Material_Type_Id(len(materials.types))
+	append(&materials.types, {
+		name = strings.clone(name, materials.allocator),
+		properties = properties,
+		params_type = P,
+		data_size = size_of(D),
+		data_align = max(align_of(D), 16),
+		resolve_proc = rawptr(resolve),
+		resolve = make_trampoline(P, D),
+	})
+
+	materials.type_by_params[P] = id
+	return id
+}
+
+@(private="file")
+make_trampoline :: proc($P, $D: typeid) -> Resolve_Trampoline {
+	return proc(textures: ^Textures, out: []byte, params: rawptr, resolve: rawptr) {
+		typed_resolve := cast(proc(^Textures, P) -> D)resolve
+		resolved_data := typed_resolve(textures, (^P)(params)^)
+		assert(len(out) == size_of(D))
+		copy(out, mem.ptr_to_bytes(&resolved_data))
+	}
+}
+
 materials_get :: proc(
 	materials: ^Materials, 
 	handle: Material_Handle,
-) -> (Material, bool) {
+	$P: typeid,
+) -> (P, Material_Error) {
 	assert(materials != nil)
-	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
-		return slot.params, true
+	if slot, slot_ok := handle_map.get(&materials.handle_map, handle); slot_ok {
+		type_id, type_ok := materials.type_by_params[P]
+		if !type_ok {
+			return {}, .Type_Not_Registered
+		}
+		if type_id != slot.type {
+			return {}, .Type_Does_Not_Match	
+		}
+
+		typed_params := slice.reinterpret([]P, slot.params)
+		return typed_params[0], nil
 	}
-	return {}, false
+	return {}, .Invalid_Handle
 }
 
-materials_get_address :: proc(
+materials_get_info :: proc(
 	materials: ^Materials, 
 	handle: Material_Handle,
-) -> Device_Address {
+) -> (Material_Info, bool) {
 	assert(materials != nil)
 	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
-		return slot.data.address
+		return {
+			type = slot.type,
+			address = slot.data.address,
+		}, true
 	}
-
-	fallback := materials.default_material if handle == {} else materials.error_material
-	slot := handle_map.get(&materials.handle_map, fallback)
-	return slot.data.address
+	return {}, false
 }

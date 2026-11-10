@@ -12,8 +12,9 @@ struct View {
 }
 
 struct Instance {
-    float3x4 object_to_world;
-    Material* material;
+    float3x4  object_to_world;
+    uint64_t  material_address;
+    uint      material_type;
 }
 
 struct Draw {
@@ -21,14 +22,26 @@ struct Draw {
     uint instance_offset; 
 } 
 
-struct Material {
+static const uint MATERIAL_TYPE_PBR = 0;
+static const uint MATERIAL_TYPE_UNLIT = 1;
+
+struct PbrMaterial {
     float4 base_color_factor;
     uint base_color_index;
     uint sampler_index;
     uint flags;
 }
 
-static const uint MATERIAL_HAS_BASE_COLOR_TEXTURE = 1 << 0;
+static const uint PBR_MATERIAL_HAS_BASE_COLOR_TEXTURE = 1 << 0;
+
+struct UnlitMaterial {
+    float4 color_factor;
+    uint color_index;
+    uint sampler_index;
+    uint flags;
+}
+
+static const uint UNLIT_MATERIAL_HAS_COLOR_TEXTURE = 1 << 0;
 
 struct PointLight: Light {
     float3 position;
@@ -119,18 +132,20 @@ SamplerState[] samplers;
 [[vk::binding(0, 1)]]
 Texture2D[] textures;
 
-[shader("fragment")]
-float4 fragment_main(VertexOutput input): SV_Target {
-    var material = constants.instances[input.instance_id].material;
-
+float4 pbr(
+    PbrMaterial *material, 
+    float3 world_position,
+    float3 world_normal,
+    float2 tex_coords
+) {
     var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
     var albedo = material.base_color_factor.rgb;
-    if ((material.flags & MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
+    if ((material.flags & PBR_MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
         var texture = textures[NonUniformResourceIndex(material.base_color_index)];
-        albedo *= texture.Sample(sampler, input.tex_coords).rgb;
+        albedo *= texture.Sample(sampler, tex_coords).rgb;
     }
     
-    let normal = normalize(input.world_normal);
+    let normal = normalize(world_normal);
     
     var color = albedo / PI
         * constants.lighting.ambient_color 
@@ -138,18 +153,57 @@ float4 fragment_main(VertexOutput input): SV_Target {
 
     for (uint i = 0; i < constants.lighting.point_light_count; i++) {
         let light = constants.lighting.point_lights[i];
-        let incident_radiance = light.get_incident_radiance(input.world_position);
-        let omega_i = light.get_omega_i(input.world_position);
+        let incident_radiance = light.get_incident_radiance(world_position);
+        let omega_i = light.get_omega_i(world_position);
         color += incident_radiance * albedo * max(dot(omega_i, normal), 0.0) / PI; 
     }
 
     for (uint i = 0; i < constants.lighting.dir_light_count; i++) {
         let light = constants.lighting.dir_lights[i];
-        let incident_radiance = light.get_incident_radiance(input.world_position);
-        let omega_i = light.get_omega_i(input.world_position);
+        let incident_radiance = light.get_incident_radiance(world_position);
+        let omega_i = light.get_omega_i(world_position);
         color += incident_radiance * albedo * max(dot(omega_i, normal), 0.0) / PI; 
     }
 
     return float4(color, 1.0);
+}
+
+float4 unlit(
+    UnlitMaterial *material, 
+    float3 world_position,
+    float3 world_normal,
+    float2 tex_coords
+) {
+    var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
+    var color = material.color_factor.rgb;
+    if ((material.flags & PBR_MATERIAL_HAS_BASE_COLOR_TEXTURE) != 0) {
+        var texture = textures[NonUniformResourceIndex(material.color_index)];
+        color *= texture.Sample(sampler, tex_coords).rgb;
+    }
+    return float4(color, 1.0);
+}
+
+[shader("fragment")]
+float4 fragment_main(VertexOutput input): SV_Target {
+    var material_type = constants.instances[input.instance_id].material_type;
+    var material_address = constants.instances[input.instance_id].material_address;
+    switch (material_type) {
+    case MATERIAL_TYPE_UNLIT: 
+        return unlit(
+            (UnlitMaterial*)material_address,
+            input.world_position,
+            input.world_normal,
+            input.tex_coords
+        );
+    case MATERIAL_TYPE_PBR:
+        return pbr(
+            (PbrMaterial*)material_address,
+            input.world_position,
+            input.world_normal,
+            input.tex_coords,
+        );
+    default:
+        return float4(1.0, 0.0, 0.0, 1.0);
+    }
 }
 
