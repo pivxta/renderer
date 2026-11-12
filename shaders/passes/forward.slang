@@ -12,11 +12,7 @@ public struct FragmentInput {
     public nointerpolation uint instanceIndex;
 }
 
-public FragmentInput ForwardVertex<M: Material>(
-    uint drawID: SV_DrawIndex,
-    uint instanceID: SV_InstanceID, 
-    uint vertexID: SV_VertexID
-) {
+public FragmentInput ForwardVertex(uint drawID, uint instanceID, uint vertexID) {
     var fetch = VertexFetch.Create(drawID, instanceID, vertexID);
     let worldPosition = fetch.WorldPosition();
     let worldNormal = fetch.WorldNormal();

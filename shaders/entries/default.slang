@@ -1,5 +1,5 @@
 import lib.common;
-import lib.mesh;
+import lib.vertex;
 import passes.forward;
 import materials.unlit;
 import materials.lambert;
@@ -10,14 +10,7 @@ FragmentInput VSMain(
     uint instanceID: SV_InstanceID, 
     uint vertexID: SV_VertexID
 ) {
-    switch (Constants.instances[Constants.draws[drawID].instanceOffset + instanceID].materialType) {
-    case MATERIAL_TYPE_UNLIT: 
-        return ForwardVertex<UnlitMaterial>(drawID, instanceID, vertexID);
-    case MATERIAL_TYPE_LAMBERT:
-        return ForwardVertex<LambertMaterial>(drawID, instanceID, vertexID);
-    default:
-        return {};
-    }
+    return ForwardVertex(drawID, instanceID, vertexID);
 }
 
 static const uint MATERIAL_TYPE_LAMBERT = 0;

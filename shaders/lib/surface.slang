@@ -4,7 +4,7 @@ public struct SurfaceInput {
     public float2 texCoords;
     public float3 geometryNormal;
     public float3 geometryTangent;
-    public float3 tangentHandedness;
+    public float  tangentHandedness;
 }
 
 public struct SurfaceOutput {

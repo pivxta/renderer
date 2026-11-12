@@ -156,7 +156,7 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 
 	renderer_register_material_type(
 		r, Lambert_Material, Lambert_Material_Data,
-		name = "Lambert_Material",
+		name = "LambertMaterial",
 		resolve = resolve_lambert,
 		properties = {
 			blend_mode = .Opaque,
@@ -167,7 +167,7 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 
 	renderer_register_material_type(
 		r, Unlit_Material, Unlit_Material_Data,
-		name = "Unlit_Material",
+		name = "UnlitMaterial",
 		resolve = resolve_unlit,
 		properties = {
 			blend_mode = .Opaque,

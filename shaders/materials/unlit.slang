@@ -29,7 +29,7 @@ public struct UnlitMaterial: Material {
         surfaceOut.baseColor = float3(0.0);
         surfaceOut.alpha = 1.0;
         surfaceOut.emission = emission;
-        surfaceOut.ambientOcclusion = 0.0;
+        surfaceOut.ambientOcclusion = 1.0;
         return {surfaceOut, {}};
     }
 }
