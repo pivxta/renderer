@@ -5,7 +5,7 @@ import brdfs.lambert;
 
 static const uint HAS_BASE_COLOR_TEXTURE = 1 << 0;
 
-public struct PbrMaterial: Material {
+public struct LambertMaterial: Material {
     typealias B = LambertBrdf;
 
     struct Params {

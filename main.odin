@@ -83,10 +83,12 @@ main :: proc() {
 		color = {1.0, 1.0, 1.0},
 		illuminance = 2.0,
 	})
+
 	append(&scene.point_lights, {
 		position = {0.0, 0.0, 0.0},
 		color = {1.0, 1.0, 0.5},
 		power = 200.0,
+		radius = 15.0,
 	})
 
 	cube := make_cube()
@@ -111,7 +113,7 @@ main :: proc() {
 		log.error("Failed to load texture: %v", rocks_image)
 	}
 
-	rocks_material, _ := renderer_add_material(&renderer, Pbr_Material {
+	rocks_material, _ := renderer_add_material(&renderer, Lambert_Material {
 		base_color_factor = {1.0, 1.0, 1.0, 1.0},
 		base_color_texture = rocks_texture,
 		sampler = .Linear_Repeat,

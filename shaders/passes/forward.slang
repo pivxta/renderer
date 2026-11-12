@@ -2,6 +2,7 @@ import lib.material;
 import lib.surface;
 import lib.common;
 import lib.brdf;
+import lib.vertex;
 
 public struct FragmentInput {
     public float4 clipPosition: SV_Position;
@@ -9,6 +10,25 @@ public struct FragmentInput {
     public float3 worldNormal;
     public float2 texCoords;
     public nointerpolation uint instanceIndex;
+}
+
+public FragmentInput ForwardVertex<M: Material>(
+    uint drawID: SV_DrawIndex,
+    uint instanceID: SV_InstanceID, 
+    uint vertexID: SV_VertexID
+) {
+    var fetch = VertexFetch.Create(drawID, instanceID, vertexID);
+    let worldPosition = fetch.WorldPosition();
+    let worldNormal = fetch.WorldNormal();
+    let texCoords = fetch.TexCoord0();
+
+    FragmentInput output;
+    output.clipPosition = mul(Constants.view.worldToClip, float4(worldPosition, 1.0));
+    output.worldPosition = worldPosition;
+    output.worldNormal = worldNormal;
+    output.texCoords = texCoords;
+    output.instanceIndex = fetch.InstanceIndex();
+    return output;
 }
 
 public float4 ForwardFragment<M: Material>(FragmentInput input) {

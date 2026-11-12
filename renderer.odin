@@ -155,9 +155,9 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	) or_return
 
 	renderer_register_material_type(
-		r, Pbr_Material, Pbr_Material_Data,
-		name = "Pbr_Material",
-		resolve = resolve_pbr,
+		r, Lambert_Material, Lambert_Material_Data,
+		name = "Lambert_Material",
+		resolve = resolve_lambert,
 		properties = {
 			blend_mode = .Opaque,
 			alpha_test = false,

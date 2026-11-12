@@ -54,27 +54,27 @@ resolve_unlit :: proc(textures: ^Textures, params: Unlit_Material) -> Unlit_Mate
 	}
 }
 
-Pbr_Material :: struct {
+Lambert_Material :: struct {
 	base_color_factor: Maybe([4]f32),
 	base_color_texture: Maybe(Texture_Handle),
 	sampler: Texture_Sampler,
 }
 
-Pbr_Material_Data :: struct {
+Lambert_Material_Data :: struct {
 	base_color_factor: [4]f32,
 	base_color_texture: Texture_Index,
 	sampler: Texture_Sampler,
-	flags: Pbr_Material_Flags,
+	flags: Lambert_Material_Flags,
 }
 
-Pbr_Material_Flag :: enum {
+Lambert_Material_Flag :: enum {
 	Has_Base_Color_Texture,
 }
 
-Pbr_Material_Flags :: bit_set[Pbr_Material_Flag; u32]
+Lambert_Material_Flags :: bit_set[Lambert_Material_Flag; u32]
 
-resolve_pbr :: proc(textures: ^Textures, params: Pbr_Material) -> Pbr_Material_Data {
-	flags := Pbr_Material_Flags{}
+resolve_lambert :: proc(textures: ^Textures, params: Lambert_Material) -> Lambert_Material_Data {
+	flags := Lambert_Material_Flags{}
 
 	base_color_texture, base_color_ok := params.base_color_texture.?
 	base_color_index: Texture_Index
