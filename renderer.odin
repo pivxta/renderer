@@ -56,6 +56,7 @@ Renderer_Error :: union #shared_nil {
 
 View_Data :: struct {
 	world_to_clip: matrix[4, 4]f32,
+	position: [3]f32,
 }
 
 Vertex_Data :: struct {
@@ -399,7 +400,10 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 ) {
 	width := int(renderer.surface.extent.width)
 	height := int(renderer.surface.extent.height)
-	view := View_Data { world_to_clip = get_world_to_clip_matrix(scene.camera, width, height) }
+	view := View_Data { 
+		world_to_clip = get_world_to_clip_matrix(scene.camera, width, height),
+		position = scene.camera.transform.translation,
+	}
 	data.view = scratch_new_clone(frame.scratch, view) or_return
 
 	point_lights := scratch_make(
@@ -812,13 +816,13 @@ create_pipeline :: proc(r: ^Renderer) -> vk.Result {
 			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 			stage = {.VERTEX},
 			module = shader_module,
-			pName = "vertex_main",
+			pName = "VSMain",
 		},
 		{
 			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 			stage = {.FRAGMENT},
 			module = shader_module,
-			pName = "fragment_main",
+			pName = "FSMain",
 		},
 	}
 

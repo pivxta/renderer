@@ -33,60 +33,60 @@ static const uint ENCODING_SIZE[20] = {
 };
 
 public struct MeshRecord {
-    public uint64_t data_address;
-    public uint     data_offsets[16];
+    public uint64_t dataAddress;
+    public uint     dataOffsets[16];
     public uint8_t  encodings[16];
     public uint     divisors[16];
     public uint     attributes;
-    public uint     vertex_count;
+    public uint     vertexCount;
 };
 
-public bool mesh_has(MeshRecord* mesh, uint attribute) {
+public bool MeshHas(MeshRecord* mesh, uint attribute) {
     return ((mesh->attributes >> attribute) & 1) != 0;
 }
 
-uint64_t element_address(MeshRecord* mesh, uint vertex_id, uint attribute) {
+uint64_t ElementAddress(MeshRecord* mesh, uint vertexID, uint attribute) {
     uint encoding = mesh->encodings[attribute];
-    uint element = vertex_id / mesh->divisors[attribute];
-    return mesh->data_address + mesh->data_offsets[attribute]
+    uint element = vertexID / mesh->divisors[attribute];
+    return mesh->dataAddress + mesh->dataOffsets[attribute]
          + uint64_t(element) * ENCODING_SIZE[encoding];
 }
 
-public float4 mesh_load_float(MeshRecord* mesh, uint vertex_id, uint attribute, float4 fallback) {
-    if (!mesh_has(mesh, attribute)) {
+public float4 MeshLoadFloat(MeshRecord* mesh, uint vertexID, uint attribute, float4 fallback) {
+    if (!MeshHas(mesh, attribute)) {
         return fallback;
     }
-    return decode_float(mesh->encodings[attribute], element_address(mesh, vertex_id, attribute));
+    return DecodeFloat(mesh->encodings[attribute], ElementAddress(mesh, vertexID, attribute));
 }
 
-public uint4 mesh_load_uint(MeshRecord* mesh, uint vertex_id, uint attribute) {
-    if (!mesh_has(mesh, attribute)) {
+public uint4 MeshLoadUint(MeshRecord* mesh, uint vertexID, uint attribute) {
+    if (!MeshHas(mesh, attribute)) {
         return uint4(0);
     }
-    return decode_uint(mesh->encodings[attribute], element_address(mesh, vertex_id, attribute));
+    return DecodeUint(mesh->encodings[attribute], ElementAddress(mesh, vertexID, attribute));
 }
 
-uint load_word(uint64_t address) {
+uint LoadWord(uint64_t address) {
     return *((uint*)address);
 }
 
-float snorm16(uint bits) { 
+float Snorm16(uint bits) { 
     return max(float(int(bits << 16) >> 16) / 32767.0, -1.0); 
 }
 
-float unorm16(uint bits) { 
+float Unorm16(uint bits) { 
     return float(bits & 0xFFFF) / 65535.0; 
 }
 
-float snorm8(uint w, uint i) { 
+float Snorm8(uint w, uint i) { 
     return max(float(int(w << (24 - 8 * i)) >> 24) / 127.0, -1.0); 
 }
 
-float unorm8(uint w, uint i) { 
+float Unorm8(uint w, uint i) { 
     return float((w >> (8 * i)) & 0xFF) / 255.0; 
 }
 
-float3 oct_decode(float2 e) {
+float3 OctDecode(float2 e) {
     float3 v = float3(e, 1.0 - abs(e.x) - abs(e.y));
     float t = saturate(-v.z);
     v.x += v.x >= 0.0 ? -t : t;
@@ -94,45 +94,45 @@ float3 oct_decode(float2 e) {
     return normalize(v);
 }
 
-float4 decode_float(uint encoding, uint64_t a) {
-    uint w0 = load_word(a);
+float4 DecodeFloat(uint encoding, uint64_t a) {
+    uint w0 = LoadWord(a);
     switch (encoding) {
     case ENC_F32X1: return float4(asfloat(w0), 0, 0, 1);
-    case ENC_F32X2: return float4(asfloat(w0), asfloat(load_word(a + 4)), 0, 1);
-    case ENC_F32X3: return float4(asfloat(w0), asfloat(load_word(a + 4)), asfloat(load_word(a + 8)), 1);
-    case ENC_F32X4: return float4(asfloat(w0), asfloat(load_word(a + 4)), asfloat(load_word(a + 8)), asfloat(load_word(a + 12)));
+    case ENC_F32X2: return float4(asfloat(w0), asfloat(LoadWord(a + 4)), 0, 1);
+    case ENC_F32X3: return float4(asfloat(w0), asfloat(LoadWord(a + 4)), asfloat(LoadWord(a + 8)), 1);
+    case ENC_F32X4: return float4(asfloat(w0), asfloat(LoadWord(a + 4)), asfloat(LoadWord(a + 8)), asfloat(LoadWord(a + 12)));
     case ENC_F16X2: return float4(unpackHalf2x16ToFloat(w0), 0, 1);
     case ENC_F16X4: { 
-        uint w1 = load_word(a + 4);
+        uint w1 = LoadWord(a + 4);
         return float4(unpackHalf2x16ToFloat(w0), unpackHalf2x16ToFloat(w1)); 
     }
-    case ENC_SNORM16X2: return float4(snorm16(w0), snorm16(w0 >> 16), 0, 1);
+    case ENC_SNORM16X2: return float4(Snorm16(w0), Snorm16(w0 >> 16), 0, 1);
     case ENC_SNORM16X4: { 
-        uint w1 = load_word(a + 4);
-        return float4(snorm16(w0), snorm16(w0 >> 16), snorm16(w1), snorm16(w1 >> 16)); 
+        uint w1 = LoadWord(a + 4);
+        return float4(Snorm16(w0), Snorm16(w0 >> 16), Snorm16(w1), Snorm16(w1 >> 16)); 
     }
-    case ENC_UNORM16X2: return float4(unorm16(w0), unorm16(w0 >> 16), 0, 1);
+    case ENC_UNORM16X2: return float4(Unorm16(w0), Unorm16(w0 >> 16), 0, 1);
     case ENC_UNORM16X4: { 
-        uint w1 = load_word(a + 4);
-        return float4(unorm16(w0), unorm16(w0 >> 16), unorm16(w1), unorm16(w1 >> 16)); 
+        uint w1 = LoadWord(a + 4);
+        return float4(Unorm16(w0), Unorm16(w0 >> 16), Unorm16(w1), Unorm16(w1 >> 16)); 
     }
-    case ENC_SNORM8X4: return float4(snorm8(w0, 0), snorm8(w0, 1), snorm8(w0, 2), snorm8(w0, 3));
-    case ENC_UNORM8X4: return float4(unorm8(w0, 0), unorm8(w0, 1), unorm8(w0, 2), unorm8(w0, 3));
-    case ENC_OCT16:    return float4(oct_decode(float2(snorm16(w0), snorm16(w0 >> 16))), 0);
+    case ENC_SNORM8X4: return float4(Snorm8(w0, 0), Snorm8(w0, 1), Snorm8(w0, 2), Snorm8(w0, 3));
+    case ENC_UNORM8X4: return float4(Unorm8(w0, 0), Unorm8(w0, 1), Unorm8(w0, 2), Unorm8(w0, 3));
+    case ENC_OCT16:    return float4(OctDecode(float2(Snorm16(w0), Snorm16(w0 >> 16))), 0);
     default:           return float4(0, 0, 0, 1);
     }
 }
 
-uint4 decode_uint(uint encoding, uint64_t a) {
-    uint w0 = load_word(a);
+uint4 DecodeUint(uint encoding, uint64_t a) {
+    uint w0 = LoadWord(a);
     switch (encoding) {
     case ENC_U32X1: return uint4(w0, 0, 0, 0);
-    case ENC_U32X2: return uint4(w0, load_word(a + 4), 0, 0);
-    case ENC_U32X3: return uint4(w0, load_word(a + 4), load_word(a + 8), 0);
-    case ENC_U32X4: return uint4(w0, load_word(a + 4), load_word(a + 8), load_word(a + 12));
+    case ENC_U32X2: return uint4(w0, LoadWord(a + 4), 0, 0);
+    case ENC_U32X3: return uint4(w0, LoadWord(a + 4), LoadWord(a + 8), 0);
+    case ENC_U32X4: return uint4(w0, LoadWord(a + 4), LoadWord(a + 8), LoadWord(a + 12));
     case ENC_U16X2: return uint4(w0 & 0xFFFF, w0 >> 16, 0, 0);
     case ENC_U16X4: { 
-        uint w1 = load_word(a + 4);
+        uint w1 = LoadWord(a + 4);
         return uint4(w0 & 0xFFFF, w0 >> 16, w1 & 0xFFFF, w1 >> 16); 
     }
     case ENC_U8X4:  return uint4(w0 & 0xFF, (w0 >> 8) & 0xFF, (w0 >> 16) & 0xFF, w0 >> 24);

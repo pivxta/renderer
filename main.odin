@@ -112,13 +112,13 @@ main :: proc() {
 	}
 
 	rocks_material, _ := renderer_add_material(&renderer, Pbr_Material {
-		base_color_factor = {0.5, 0.5, 1.0, 1.0},
+		base_color_factor = {1.0, 1.0, 1.0, 1.0},
 		base_color_texture = rocks_texture,
 		sampler = .Linear_Repeat,
 	})
 
 	ball_material, _ := renderer_add_material(&renderer, Unlit_Material {
-		color_factor = {1.0, 1.0, 0.5, 1.0},
+		color_factor = {1.0, 1.0, 0.5},
 		sampler = .Linear_Repeat,
 	})
 

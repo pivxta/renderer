@@ -3,14 +3,6 @@ import "core:container/handle_map"
 
 Material_Handle :: distinct handle_map.Handle64
 
-Blend_Mode :: enum {
-	Opaque,
-	Alpha,
-	Premultiplied,
-	Additive,
-	Multiply,
-}
-
 Material_Properties :: struct {
 	blend_mode:   Blend_Mode,
 	alpha_test:   bool,
@@ -26,13 +18,13 @@ Material_Error :: enum {
 }
 
 Unlit_Material :: struct {
-	color_factor: Maybe([4]f32),
+	color_factor: Maybe([3]f32),
 	color_texture: Maybe(Texture_Handle),
 	sampler: Texture_Sampler,
 }
 
 Unlit_Material_Data :: struct {
-	color_factor: [4]f32,
+	color_factor: [3]f32,
 	color_texture: Texture_Index,
 	sampler: Texture_Sampler,
 	flags: Unlit_Material_Flags,
@@ -55,7 +47,7 @@ resolve_unlit :: proc(textures: ^Textures, params: Unlit_Material) -> Unlit_Mate
 	}
 
 	return {
-		color_factor = params.color_factor.? or_else {1.0, 1.0, 1.0, 1.0},
+		color_factor = params.color_factor.? or_else {1.0, 1.0, 1.0},
 		color_texture = color_index,
 		sampler = params.sampler,
 		flags = flags,

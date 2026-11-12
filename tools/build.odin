@@ -8,8 +8,8 @@ import "core:path/filepath"
 import "core:time"
 
 SHADER_SRC :: "shaders"
+SHADER_ENTRIES :: "shaders/entries"
 SHADER_OUT :: "shaders/compiled"
-SHADER_LIB :: "shaders/lib"
 BUILD_OUT :: "build"
 PROGRAM_NAME :: "render"
 
@@ -95,22 +95,25 @@ vma_is_built :: proc() -> bool {
 compile_shaders :: proc() {
 	_ = os.make_directory_all(SHADER_OUT)
 
-	files, err := os.read_all_directory_by_path(SHADER_SRC, context.temp_allocator)
-	if err != nil { 
-		fmt.eprintfln("Failed to read directory '%s': %v", SHADER_SRC, err)
+	files, err := os.read_all_directory_by_path(SHADER_ENTRIES, context.temp_allocator)
+	if err != nil {
+		fmt.eprintfln("Failed to read directory '%s': %v", SHADER_ENTRIES, err)
+		return
 	}
 
-	lib_time := newest_modification_time(SHADER_LIB)
+	// Any module anywhere under shaders/ may be imported by any entry, so a change
+	// to one of them rebuilds every entry. Coarse, but never stale.
+	modules_time := newest_modification_time(SHADER_SRC)
 
 	for file in files {
-		if filepath.ext(file.name) != ".slang" {
+		if file.type == .Directory || filepath.ext(file.name) != ".slang" {
 			continue
 		}
 
-		src := fmt.tprintf("%s/%s", SHADER_SRC, file.name)
+		src := fmt.tprintf("%s/%s", SHADER_ENTRIES, file.name)
 		dst := fmt.tprintf("%s/%s.spv", SHADER_OUT, filepath.stem(file.name))
 
-		if !needs_rebuild(src, dst, lib_time) {
+		if !needs_rebuild(src, dst, modules_time) {
 			continue
 		}
 
@@ -166,10 +169,18 @@ newest_modification_time :: proc(dir: string) -> (newest: time.Time) {
 		return
 	}
 	for file in files {
+		path := fmt.tprintf("%s/%s", dir, file.name)
+
+		if file.type == .Directory {
+			if t := newest_modification_time(path); time.diff(newest, t) > 0 {
+				newest = t
+			}
+			continue
+		}
+
 		if filepath.ext(file.name) != ".slang" {
 			continue
 		}
-		path := fmt.tprintf("%s/%s", dir, file.name)
 		if t, terr := os.modification_time_by_path(path); terr == nil && time.diff(newest, t) > 0 {
 			newest = t
 		}
@@ -200,4 +211,3 @@ run :: proc(command: []string, working_dir := "") {
 		os.exit(state.exit_code)
 	}
 }
-
