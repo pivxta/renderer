@@ -24,12 +24,13 @@ Renderer :: struct {
 	meshes: Meshes,
 	textures: Textures,
 	materials: Materials,
+	shaders: Shaders,
+	pipelines: Pipelines,
+	passes: Passes,
 	arena: virtual.Arena,
 
-	texture_handle: Texture_Handle,
-
-	pipeline_layout: vk.PipelineLayout,
-	pipeline: vk.Pipeline,
+	forward_pass: Pass_Kind_Id,
+	forward_target: Graphics_Target_Id,
 
 	depth_texture: Texture,
 }
@@ -109,6 +110,7 @@ Frame_Data :: struct {
 	instances: Scratch_Subbuffer(Instance_Data),
 	indexed_commands: Scratch_Subbuffer(vk.DrawIndexedIndirectCommand),
 	non_indexed_commands: Scratch_Subbuffer(vk.DrawIndirectCommand),
+	batches: []Draw_Batch,
 }
 
 Draw_Data :: struct {
@@ -116,15 +118,27 @@ Draw_Data :: struct {
 	instance_offset: u32,
 }
 
+Draw_Batch :: struct {
+	pipeline:      Graphics_Pipeline_Id,
+	indexed:       bool,
+	first_command: u32,
+	command_count: u32,
+}
+
 Object_Id :: struct {
-	draw_key: Draw_Key,
-	mesh_handle: Mesh_Handle,
+	draw_key:     Draw_Key,
+	pipeline:     Graphics_Pipeline_Id,
+	mesh_handle:  Mesh_Handle,
 	object_index: int,
 }
 
 Draw_Key :: distinct u64
 
-make_draw_key :: proc(pipeline: u16, indexed: bool, handle: Mesh_Handle) -> Draw_Key {
+make_draw_key :: proc(
+	pipeline: Graphics_Pipeline_Id, 
+	indexed: bool, 
+	handle: Mesh_Handle,
+) -> Draw_Key {
 	return Draw_Key((u64(pipeline) << 33) | (u64(indexed) << 32) | u64(handle.idx))
 }
 
@@ -143,6 +157,7 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
 	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
 	mipgen_queue_init(&r.mipgen_queue)
+	shaders_init(&r.shaders)
 
 	meshes_init(&r.meshes, r.device, MESH_POOL_CAPACITY, INDEX_POOL_CAPACITY) or_return
 	materials_init(&r.materials, r.device, MATERIAL_POOL_CAPACITY) or_return
@@ -154,32 +169,60 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 		TEXTURES_CAPACITY,
 	) or_return
 
+	set_layouts := []vk.DescriptorSetLayout {
+		textures_get_sampler_set_layout(r.textures),
+		textures_get_texture_set_layout(r.textures),
+	}
+	push_constant_ranges := []vk.PushConstantRange {{
+		stageFlags = {.VERTEX, .FRAGMENT},
+		offset = 0, 
+		size = size_of(Push_Constants_Data),
+	}}
+	pipelines_init(&r.pipelines, r.device, set_layouts, push_constant_ranges) or_return
+	passes_init(&r.passes)
+
+	MODULE_SPIRV :: #load("shaders/compiled/forward.spv", []u32)
+	shaders_load_module(&r.shaders, r.device, "Forward", MODULE_SPIRV) or_return
+
 	renderer_register_material_type(
 		r, Lambert_Material, Lambert_Material_Data,
 		name = "LambertMaterial",
 		resolve = resolve_lambert,
-		properties = {
-			blend_mode = .Opaque,
-			alpha_test = false,
-			double_sided = false,
-		},
 	)
 
 	renderer_register_material_type(
 		r, Unlit_Material, Unlit_Material_Data,
 		name = "UnlitMaterial",
 		resolve = resolve_unlit,
-		properties = {
-			blend_mode = .Opaque,
-			alpha_test = false,
-			double_sided = false,
-		},
 	)
 
 	surface_configure(&r.surface, r.device) or_return
 	create_depth_texture(r) or_return
+
+	r.forward_target = pipelines_add_target(&r.pipelines, {
+		color = {r.surface.format},
+		depth = .D32_SFLOAT,
+		samples = ._1,
+	})
+
+	r.forward_pass = passes_add_kind(
+		&r.passes, r.device, &r.pipelines, 
+		&r.shaders, r.materials,
+		{
+			name = "Forward",
+			target = r.forward_target,
+			base_state = {
+				depth_test = .Closer_Or_Equal,
+				depth_write = true,
+			},
+			select = forward_select,
+		},
+	)
+
+	/*
 	create_pipeline_layout(r) or_return
 	create_pipeline(r) or_return
+	*/
 	return nil
 }
 
@@ -191,13 +234,18 @@ renderer_destroy :: proc (r: ^Renderer) {
 	if r.device.logical != nil {
 		_ = vk.DeviceWaitIdle(r.device.logical)
 	}
+	/*
 	destroy_pipeline(r)
 	destroy_pipeline_layout(r)
+	*/
 	destroy_depth_texture(r)
 
+	passes_destroy(&r.passes)
+	pipelines_destroy(&r.pipelines, r.device)
 	textures_destroy(&r.textures, r.device)
 	materials_destroy(&r.materials, r.device)
 	meshes_destroy(&r.meshes, r.device)
+	shaders_destroy(&r.shaders, r.device)
 	mipgen_queue_destroy(&r.mipgen_queue)
 	upload_queue_destroy(&r.upload_queue, r.device)
 	frame_ring_destroy(&r.frame_ring, r.device)
@@ -275,16 +323,32 @@ renderer_set_texture_sampler_options :: proc(r: ^Renderer, options: Texture_Samp
 	textures_set_sampler_options(&r.textures, options)
 }
 
-renderer_add_material :: proc(r: ^Renderer, params: $P) -> (Material_Handle, Material_Error) {
-	return materials_add(&r.materials, params)
+renderer_add_material :: proc(
+	r: ^Renderer, 
+	params: $P,
+	props := Material_Properties {},
+) -> (handle: Material_Handle, err: Material_Error) {
+	handle = materials_add(&r.materials, params) or_return
+	new_variants := materials_take_new_variants(&r.materials)
+	for variant in new_variants {
+		passes_add_variant(&r.passes, r.device, &r.pipelines, &r.shaders, r.materials, variant)
+	}
+	delete(new_variants)
+	return handle, nil
 }
 
 renderer_replace_material :: proc(
 	r: ^Renderer, 
 	handle: Material_Handle, 
 	params: $P,
+	props := Material_Properties {},
 ) -> Material_Error {
-	return materials_replace(&r.materials, r.frame_ring, handle, params)
+	materials_replace(&r.materials, r.frame_ring, handle, params) or_return
+	new_variants := materials_take_new_variants(&r.materials)
+	for variant in new_variants {
+		passes_add_variant(&r.passes, r.device, &r.pipelines, &r.shaders, r.materials, variant)
+	}
+	delete(new_variants)
 }
 
 renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
@@ -294,7 +358,7 @@ renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
 renderer_get_material :: proc(
 	r: ^Renderer, 
 	handle: Material_Handle, 
-	$P: typeid
+	$P: typeid,
 ) -> (P, Material_Error) {
 	return materials_get(&r.materials, handle, P)
 }
@@ -303,10 +367,36 @@ renderer_register_material_type :: proc(
 	r: ^Renderer,
 	$P, $D: typeid,
 	name: string,
-	properties: Material_Properties,
 	resolve: proc(^Textures, P) -> D,
 ) -> Material_Type_Id {
-	return materials_register_type(&r.materials, P, D, name, properties, resolve)
+	return materials_register_type(&r.materials, P, D, name, resolve)
+}
+
+@(private="file")
+forward_select :: proc(
+	shaders: ^Shaders, 
+	props: Material_Properties, 
+	base: Raster_State,
+	type_name: string,
+) -> Maybe(Pass_Selection) {
+	vertex, vertex_ok := shaders_get_program(shaders, "Forward", "VSMain", .VERTEX)
+	fragment, fragment_ok := shaders_get_program(shaders, "Forward", "FSMain", .FRAGMENT)
+	if !vertex_ok || !fragment_ok {
+		return nil
+	}
+
+	state := base
+	state.cull_mode = .None if props.double_sided else .Back
+	state.blend_mode = alpha_mode_to_blend_mode(props.alpha_mode)
+	if alpha_mode_is_blended(props.alpha_mode) {
+		state.depth_write = false
+	}
+	
+	return {
+		vertex = vertex,
+		fragment = fragment,
+		raster_state = state,
+	}
 }
 
 @(require_results)
@@ -348,7 +438,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 
 	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
 	mipgen_queue_record_commands(&r.mipgen_queue, frame_context.command_buffer)
-	record_commands(r^, frame_context.command_buffer, frame_data, surface_texture)
+	record_commands(r, frame_context.command_buffer, frame_data, surface_texture)
 
 	textures_destroy_pending(&r.textures, r.device, frame_context.finished_timeline_value)
 	materials_destroy_pending(&r.materials, frame_context.finished_timeline_value)
@@ -386,7 +476,18 @@ reconfigure_targets :: proc(r: ^Renderer) -> Renderer_Error {
 	surface_configure(&r.surface, r.device) or_return
 	new_format := r.surface.format
 	if old_format != new_format {
-		create_pipeline(r) or_return
+		pipelines_set_target(
+			&r.pipelines, 
+			r.device, 
+			r.frame_ring,
+			r.shaders,
+			r.forward_target, 
+			Attachment_Formats {
+				color = {r.surface.format},
+				depth = .D32_SFLOAT,
+				samples = ._1,
+			},
+		) or_return
 	}
 
 	create_depth_texture(r) or_return
@@ -449,13 +550,26 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 
 	scratch_objects := make([dynamic]Object_Id, 0, len(scene.mesh_objects), context.temp_allocator)
 	for mesh_object, index in scene.mesh_objects {
-		if meshes_is_loaded(&renderer.meshes, mesh_object.mesh) &&
-		   materials_is_valid(&renderer.materials, mesh_object.material) {
-			pipeline := u16(0)
+		if meshes_is_loaded(&renderer.meshes, mesh_object.mesh) {
+			material_info, has_material := materials_get_info(&renderer.materials, mesh_object.material)
+			if !has_material {
+				continue
+			}
+
+			pipeline, has_pipeline := passes_get_pipeline(
+				renderer.passes, 
+				renderer.forward_pass, 
+				material_info.variant,
+			).?
+			if !has_pipeline {
+				continue
+			}
+
 			indexed := meshes_is_indexed(&renderer.meshes, mesh_object.mesh)
 			draw_key := make_draw_key(pipeline, indexed, mesh_object.mesh)
 			append(&scratch_objects, {
 				draw_key = draw_key,
+				pipeline = pipeline,
 				mesh_handle = mesh_object.mesh,
 				object_index = index,
 			})
@@ -470,6 +584,7 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 		}
 	})
 
+	batches := make([dynamic]Draw_Batch, context.temp_allocator)
 	indexed_draws := make([dynamic]Draw_Data, context.temp_allocator)
 	non_indexed_draws := make([dynamic]Draw_Data, context.temp_allocator)
 	indexed_commands := make([dynamic]vk.DrawIndexedIndirectCommand, context.temp_allocator)
@@ -484,6 +599,10 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 		instance_count := i - draw_start
 		mesh_info, mesh_ok := meshes_get_info(&renderer.meshes, scratch_objects[draw_start].mesh_handle)
 		assert(mesh_ok)
+
+		object := scratch_objects[draw_start]
+		indexed := mesh_info.index_count > 0
+		command_index := u32(len(indexed_commands) if indexed else len(non_indexed_commands))
 		
 		draw := Draw_Data {
 			mesh_record_address = mesh_info.record_address,
@@ -507,11 +626,26 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 				firstInstance = 0,
 			})
 		}
+
+		last := len(batches) - 1
+		if last < 0 ||
+		   batches[last].pipeline != object.pipeline || 
+		   batches[last].indexed != indexed {
+			append(&batches, {
+				pipeline = object.pipeline,
+				indexed = indexed,
+				first_command = command_index,
+				command_count = 0,
+			})
+			last += 1
+		}
+		batches[last].command_count += 1
 	}
 	data.indexed_draws = scratch_slice_clone(frame.scratch, indexed_draws[:]) or_return
 	data.non_indexed_draws = scratch_slice_clone(frame.scratch, non_indexed_draws[:]) or_return
 	data.indexed_commands = scratch_slice_clone(frame.scratch, indexed_commands[:]) or_return
 	data.non_indexed_commands = scratch_slice_clone(frame.scratch, non_indexed_commands[:]) or_return
+	data.batches = batches[:]
 
 	data.instances = scratch_make(frame.scratch, []Instance_Data, len(scratch_objects)) or_return
 	for scratch_object, i in scratch_objects {
@@ -529,7 +663,7 @@ write_frame_data :: proc(renderer: ^Renderer, frame: Frame_Context, scene: Scene
 }
 
 record_commands :: proc(
-	renderer: Renderer, 
+	renderer: ^Renderer, 
 	commands: vk.CommandBuffer, 
 	frame_data: Frame_Data,
 	surface: Surface_Texture,
@@ -582,7 +716,7 @@ record_commands :: proc(
 }
 
 record_draw_commands :: proc(
-	renderer: Renderer, 
+	renderer: ^Renderer, 
 	commands: vk.CommandBuffer, 
 	frame_data: Frame_Data,
 	surface: Surface_Texture,
@@ -649,40 +783,47 @@ record_draw_commands :: proc(
 	}
 	vk.CmdBindDescriptorSets(
 		commands, .GRAPHICS, 
-		renderer.pipeline_layout, 
+		renderer.pipelines.layout, 
 		0, u32(len(descriptor_sets)), raw_data(descriptor_sets), 
 		0, nil,
 	)
 
-	vk.CmdBindPipeline(commands, .GRAPHICS, renderer.pipeline)
 	vk.CmdBindIndexBuffer(commands, meshes_get_index_buffer(renderer.meshes).handle, 0, .UINT32)
-	if len(frame_data.indexed_commands.data) > 0 {
-		constants.draws_address = frame_data.indexed_draws.address
+
+	bound := Graphics_Pipeline_Id(max(u32))
+	for batch in frame_data.batches {
+		if batch.pipeline != bound {
+			vk.CmdBindPipeline(
+				commands, .GRAPHICS, 
+				pipelines_get_handle(&renderer.pipelines, batch.pipeline),
+			)
+			bound = batch.pipeline
+		}
+
+		draws := frame_data.indexed_draws if batch.indexed else frame_data.non_indexed_draws
+		constants.draws_address = draws.address + Device_Address(batch.first_command) * size_of(Draw_Data)
 		vk.CmdPushConstants(
-			commands, renderer.pipeline_layout, {.VERTEX, .FRAGMENT}, 
+			commands, renderer.pipelines.layout, {.VERTEX, .FRAGMENT}, 
 			0, size_of(constants), &constants,
 		)
-		vk.CmdDrawIndexedIndirect(
-			commands, 
-			frame_data.indexed_commands.buffer_handle,
-			frame_data.indexed_commands.offset,
-			u32(len(frame_data.indexed_commands.data)),
-			size_of(vk.DrawIndexedIndirectCommand),
-		)
-	}
-	if len(frame_data.non_indexed_commands.data) > 0 {
-		constants.draws_address = frame_data.non_indexed_draws.address
-		vk.CmdPushConstants(
-			commands, renderer.pipeline_layout, {.VERTEX, .FRAGMENT}, 
-			0, size_of(constants), &constants,
-		)
-		vk.CmdDrawIndirect(
-			commands,
-			frame_data.non_indexed_commands.buffer_handle,
-			frame_data.non_indexed_commands.offset,
-			u32(len(frame_data.non_indexed_commands.data)),
-			size_of(vk.DrawIndirectCommand),
-		)
+
+		if batch.indexed {
+			vk.CmdDrawIndexedIndirect(
+				commands, 
+				frame_data.indexed_commands.buffer_handle,
+				frame_data.indexed_commands.offset + Device_Size(batch.first_command),
+				batch.command_count,
+				size_of(vk.DrawIndexedIndirectCommand),
+			)
+		} else {
+			vk.CmdDrawIndirect(
+				commands,
+				frame_data.non_indexed_commands.buffer_handle,
+				frame_data.non_indexed_commands.offset + Device_Size(batch.first_command),
+				batch.command_count,
+				size_of(vk.DrawIndirectCommand),
+			)
+		}
 	}
 	
 	vk.CmdEndRendering(commands)
@@ -698,52 +839,6 @@ record_image_barrier :: proc(cmd: vk.CommandBuffer, barrier: vk.ImageMemoryBarri
 	}
 	vk.CmdPipelineBarrier2(cmd, &dependency_info)
 }
-
-/*
-@(require_results)
-load_textures :: proc(r: ^Renderer) -> Renderer_Error {
-	image, err := image_load_from_file("assets/rocksalbedo.jpg")
-	if err != nil {
-		log.panic("failed to load image") // ok to panic here since this is temporary code
-	}
-	defer image_destroy(&image)
-
-	/*
-	texture: Texture
-	texture_init(
-		&texture, r.device,
-		type = .D2,
-		format = image_format_to_vk(image.format, srgb=true),
-		usage = {.TRANSFER_DST, .SAMPLED},
-		extent = {u32(image.width), u32(image.height), 1},
-	) or_return
-
-	ok: bool
-
-	r.texture_handle, ok = bindless_add(&r.bindless_textures, r.device, texture)
-	if !ok {
-		texture_destroy(&texture, r.device)
-		log.panic("Failed to add texture to bindless table")
-	}
-
-	ok = upload_texture(
-		&r.upload_queue, 
-		r.frame_ring, 
-		texture, image,
-		{ 
-			stages = {.FRAGMENT_SHADER},
-			access = {.SHADER_SAMPLED_READ},
-			layout = .SHADER_READ_ONLY_OPTIMAL,
-		},
-	)
-	if !ok {
-		log.panic("Failed to upload texture")
-	}
-	*/
-
-	return nil
-}
-*/
 
 @(require_results)
 create_depth_texture :: proc(r: ^Renderer) -> Texture_Error {
@@ -769,6 +864,7 @@ destroy_depth_texture :: proc(r: ^Renderer) {
 	texture_destroy(&r.depth_texture, r.device)
 }
 
+/*
 @(require_results)
 create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
 	set_layouts := []vk.DescriptorSetLayout {
@@ -793,37 +889,22 @@ create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
 
 @(require_results)
 create_pipeline :: proc(r: ^Renderer) -> vk.Result {
-	SHADER_SPIRV :: #load("shaders/compiled/default.spv")
-	shader_module: vk.ShaderModule
-	shader_module_info := vk.ShaderModuleCreateInfo {
-		sType = .SHADER_MODULE_CREATE_INFO,
-		codeSize = len(SHADER_SPIRV),
-		pCode = cast([^]u32)raw_data(SHADER_SPIRV),
-	}
-
-	vk.CreateShaderModule(
-		r.device.logical, 
-		&shader_module_info, nil, 
-		&shader_module,
-	) or_return
-
-	defer if shader_module != 0 {
-		vk.DestroyShaderModule(r.device.logical, shader_module, nil)
-	}
+	vertex_program, _ := shaders_get_program(
+		&r.shaders, 
+		module = "Forward", 
+		entry = "VSMain", 
+		stage = .VERTEX,
+	)
+	fragment_program, _ := shaders_get_program(
+		&r.shaders, 
+		module = "Forward", 
+		entry = "FSMain", 
+		stage = .FRAGMENT,
+	)
 
 	shader_stages := []vk.PipelineShaderStageCreateInfo {
-		{
-			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage = {.VERTEX},
-			module = shader_module,
-			pName = "VSMain",
-		},
-		{
-			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage = {.FRAGMENT},
-			module = shader_module,
-			pName = "FSMain",
-		},
+		shaders_get_stage_info(r.shaders, vertex_program),
+		shaders_get_stage_info(r.shaders, fragment_program),
 	}
 
 	vertex_state := vk.PipelineVertexInputStateCreateInfo {
@@ -926,3 +1007,4 @@ destroy_pipeline :: proc(r: ^Renderer) {
 	}
 }
 
+*/

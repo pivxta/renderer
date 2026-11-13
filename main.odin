@@ -106,16 +106,25 @@ main :: proc() {
 	}
 
 	rocks_texture: Texture_Handle
-	if rocks_image, rocks_err := image_load_from_file("assets/rocksalbedo.jpg"); rocks_err == nil {
-		rocks_texture, _ = renderer_add_texture(&renderer, rocks_image)
-		image_destroy(&rocks_image)
+	if image, image_err := image_load_from_file("assets/rocksalbedo.jpg"); image_err == nil {
+		rocks_texture, _ = renderer_add_texture(&renderer, image)
+		image_destroy(&image)
 	} else {
-		log.error("Failed to load texture: %v", rocks_image)
+		log.errorf("Failed to load texture: %v", image_err)
+	}
+
+	rocks_normal_map: Texture_Handle
+	if image, image_err := image_load_from_file("assets/rocksnormal.jpg"); image_err == nil {
+		rocks_normal_map, _ = renderer_add_texture(&renderer, image, {colorspace = .Linear})
+		image_destroy(&image)
+	} else {
+		log.errorf("Failed to load texture: %v", image_err)
 	}
 
 	rocks_material, _ := renderer_add_material(&renderer, Lambert_Material {
 		base_color_factor = {1.0, 1.0, 1.0, 1.0},
 		base_color_texture = rocks_texture,
+		normal_map = rocks_normal_map,
 		sampler = .Linear_Repeat,
 	})
 

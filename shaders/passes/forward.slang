@@ -8,7 +8,9 @@ public struct FragmentInput {
     public float4 clipPosition: SV_Position;
     public float3 worldPosition;
     public float3 worldNormal;
+    public float3 worldTangent;
     public float2 texCoords;
+    public nointerpolation float tangentHandedness;
     public nointerpolation uint instanceIndex;
 }
 
@@ -16,13 +18,16 @@ public FragmentInput ForwardVertex(uint drawID, uint instanceID, uint vertexID) 
     var fetch = VertexFetch.Create(drawID, instanceID, vertexID);
     let worldPosition = fetch.WorldPosition();
     let worldNormal = fetch.WorldNormal();
+    let worldTangent = fetch.WorldTangent();
     let texCoords = fetch.TexCoord0();
 
     FragmentInput output;
     output.clipPosition = mul(Constants.view.worldToClip, float4(worldPosition, 1.0));
+    output.texCoords = texCoords;
     output.worldPosition = worldPosition;
     output.worldNormal = worldNormal;
-    output.texCoords = texCoords;
+    output.worldTangent = worldTangent.xyz;
+    output.tangentHandedness = worldTangent.w;
     output.instanceIndex = fetch.InstanceIndex();
     return output;
 }
@@ -62,7 +67,7 @@ SurfaceInput MakeSurfaceInput(FragmentInput input) {
     s.position = input.worldPosition;
     s.texCoords = input.texCoords;
     s.geometryNormal = normalize(input.worldNormal);
-    s.geometryTangent = float3(0.0);
-    s.tangentHandedness = 0.0;
+    s.geometryTangent = normalize(input.worldTangent);
+    s.tangentHandedness = input.tangentHandedness;
     return s;
 }

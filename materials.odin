@@ -9,18 +9,30 @@ import "core:container/handle_map"
 @(require) import "core:strings"
 
 Materials :: struct {
-	pool:           Pool_Buffer,
-	allocator:      runtime.Allocator,
-	pending_frees:  queue.Queue(Pending_Free),
-	handle_map:     handle_map.Dynamic_Handle_Map(Material_Slot, Material_Handle),
-	dirty:          [dynamic]Material_Handle,
-	dependents:     [dynamic]Texture_Dependents,
-	types:          [dynamic]Material_Type,
-	type_by_params: map[typeid]Material_Type_Id,
+	pool:            Pool_Buffer,
+	allocator:       runtime.Allocator,
+	pending_frees:   queue.Queue(Pending_Free),
+	handle_map:      handle_map.Dynamic_Handle_Map(Material_Slot, Material_Handle),
+	dirty:           [dynamic]Material_Handle,
+	dependents:      [dynamic]Texture_Dependents,
+	types:           [dynamic]Material_Type,
+	type_by_params:  map[typeid]Material_Type_Id,
+	variants:        [dynamic]Material_Variant_Key,
+	variants_by_key: map[Material_Variant_Key]Material_Variant_Id,
+	new_variants:    [dynamic]Material_Variant_Id,
+}
+
+Material_Variant_Id :: distinct u32
+
+Material_Variant_Key :: struct {
+	type:  Material_Type_Id,
+	props: Material_Properties,
 }
 
 Material_Info :: struct {
-	type: Material_Type_Id,
+	type:    Material_Type_Id,
+	props:   Material_Properties,
+	variant: Material_Variant_Id,
 	address: Device_Address,
 }
 
@@ -37,7 +49,6 @@ Material_Type :: struct {
 	params_type:  typeid,
 	data_size:    int,
 	data_align:   int,
-	properties:   Material_Properties,
 	resolve_proc: rawptr,
 	resolve:      Resolve_Trampoline,
 }
@@ -79,6 +90,8 @@ Material_Dirty_Level :: enum {
 Material_Slot :: struct {
 	handle:       Material_Handle,
 	type:         Material_Type_Id,
+	variant:      Material_Variant_Id,
+	props:        Material_Properties,
 	params:       []byte,
 	data:         Pool_Subbuffer(byte),
 	dependencies: [dynamic]Material_Dependency,
@@ -114,6 +127,9 @@ materials_init :: proc(
 	materials.dirty = make([dynamic]Material_Handle, allocator)
 	materials.types = make([dynamic]Material_Type, allocator)
 	materials.type_by_params = make(map[typeid]Material_Type_Id, allocator)
+	materials.variants = make([dynamic]Material_Variant_Key, allocator)
+	materials.variants_by_key = make(map[Material_Variant_Key]Material_Variant_Id, allocator)
+	materials.new_variants = make([dynamic]Material_Variant_Id, allocator)
 
 	handle_map.dynamic_init(&materials.handle_map, allocator)
 	queue.init(&materials.pending_frees, queue.DEFAULT_CAPACITY, allocator)
@@ -148,6 +164,9 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 	delete(materials.dependents)
 	delete(materials.types)
 	delete(materials.type_by_params)
+	delete(materials.variants)
+	delete(materials.variants_by_key)
+	delete(materials.new_variants)
 	handle_map.dynamic_destroy(&materials.handle_map)
 	queue.destroy(&materials.pending_frees)
 	pool_destroy(&materials.pool, device)
@@ -157,6 +176,7 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 materials_add :: proc(
 	materials: ^Materials, 
 	params: $P,
+	props := Material_Properties {},
 ) -> (handle: Material_Handle, err: Material_Error) {
 	assert(materials != nil)
 
@@ -169,8 +189,10 @@ materials_add :: proc(
 	handle = handle_map.add(&materials.handle_map, {
 		dirty = .Params,
 		fresh = true,
+		props = props,
 		data = data,
 		type = type_id,
+		variant = add_variant(materials, type_id, props),
 		params = make_params(params, materials.allocator),
 		dependencies = make([dynamic]Material_Dependency, materials.allocator),
 	})
@@ -184,6 +206,7 @@ materials_replace :: proc(
 	frame_ring: Frame_Ring,
 	handle: Material_Handle, 
 	params: $P,
+	props := Material_Properties {},
 ) -> Material_Error {
 	assert(materials != nil)
 	
@@ -201,12 +224,31 @@ materials_replace :: proc(
 	defer_free(materials, frame_ring, slot)
 	delete(slot.params, materials.allocator)
 	slot.params = make_params(params, materials.allocator)
+	slot.variant = add_variant(materials, type_id, props)
+	slot.props = props
 	slot.type = type_id
 	slot.data = new_data
 	slot.fresh = true
 	mark(materials, slot, .Params)
-
 	return nil
+}
+
+@(private="file")
+add_variant :: proc(
+	materials: ^Materials, 
+	type: Material_Type_Id, 
+	props: Material_Properties,
+) -> Material_Variant_Id {
+	if variant_id, exists := materials.variants_by_key[{type, props}]; exists {
+		return variant_id
+	}
+
+	variant_id := Material_Variant_Id(len(materials.variants))
+	variant := Material_Variant_Key {type, props}
+	append(&materials.variants, variant)
+	append(&materials.new_variants, variant_id)
+	materials.variants_by_key[variant] = variant_id
+	return variant_id
 }
 
 @(private="file", require_results)
@@ -481,7 +523,6 @@ materials_register_type :: proc(
 	materials: ^Materials,
 	$P, $D: typeid,
 	name: string,
-	properties: Material_Properties,
 	resolve: proc(^Textures, P) -> D,
 ) -> Material_Type_Id {
 	assert(materials != nil)
@@ -490,7 +531,6 @@ materials_register_type :: proc(
 	id := Material_Type_Id(len(materials.types))
 	append(&materials.types, {
 		name = strings.clone(name, materials.allocator),
-		properties = properties,
 		params_type = P,
 		data_size = size_of(D),
 		data_align = max(align_of(D), 16),
@@ -541,6 +581,8 @@ materials_get_info :: proc(
 	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
 		return {
 			type = slot.type,
+			props = slot.props,
+			variant = slot.variant,
 			address = slot.data.address,
 		}, true
 	}
@@ -550,4 +592,31 @@ materials_get_info :: proc(
 materials_is_valid :: proc(materials: ^Materials, handle: Material_Handle) -> bool {
 	assert(materials != nil)
 	return handle_map.is_valid(&materials.handle_map, handle)
+}
+
+materials_get_type_name :: proc(materials: Materials, id: Material_Type_Id) -> string {
+	assert(int(id) < len(materials.types))
+	return materials.types[id].name
+}
+
+materials_get_variant_count :: proc(materials: Materials) -> int {
+	return len(materials.variants)
+}
+
+materials_get_variant :: proc(
+	materials: Materials, 
+	id: Material_Variant_Id,
+) -> Material_Variant_Key {
+	assert(int(id) < len(materials.variants))
+	return materials.variants[id]
+}
+
+materials_take_new_variants :: proc(
+	materials: ^Materials,
+	allocator := context.allocator,
+) -> []Material_Variant_Id {
+	assert(materials != nil)
+	new_variants := slice.clone(materials.new_variants[:], allocator)
+	clear(&materials.new_variants)
+	return new_variants
 }
