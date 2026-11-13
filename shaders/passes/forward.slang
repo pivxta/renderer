@@ -62,12 +62,19 @@ public float4 ForwardFragment<M: Material>(FragmentInput input) {
 }
 
 SurfaceInput MakeSurfaceInput(FragmentInput input) {
+    let n = normalize(input.worldNormal);
+    var t = input.worldTangent - n * dot(n, input.worldTangent);
+    if (dot(t, t) < 1e-8) {
+        t = abs(n.x) < 0.9 ? cross(n, float3(1, 0, 0)) : cross(n, float3(0, 1, 0));
+    }
+    t = normalize(t);
+
     SurfaceInput s;
     s.viewPosition = Constants.view.position;
     s.position = input.worldPosition;
     s.texCoords = input.texCoords;
-    s.geometryNormal = normalize(input.worldNormal);
-    s.geometryTangent = normalize(input.worldTangent);
+    s.geometryNormal = n;
+    s.geometryTangent = t;
     s.tangentHandedness = input.tangentHandedness;
     return s;
 }

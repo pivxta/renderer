@@ -219,10 +219,6 @@ renderer_init :: proc(r: ^Renderer, window: ^Window) -> (err: Renderer_Error) {
 		},
 	)
 
-	/*
-	create_pipeline_layout(r) or_return
-	create_pipeline(r) or_return
-	*/
 	return nil
 }
 
@@ -234,10 +230,6 @@ renderer_destroy :: proc (r: ^Renderer) {
 	if r.device.logical != nil {
 		_ = vk.DeviceWaitIdle(r.device.logical)
 	}
-	/*
-	destroy_pipeline(r)
-	destroy_pipeline_layout(r)
-	*/
 	destroy_depth_texture(r)
 
 	passes_destroy(&r.passes)
@@ -328,7 +320,7 @@ renderer_add_material :: proc(
 	params: $P,
 	props := Material_Properties {},
 ) -> (handle: Material_Handle, err: Material_Error) {
-	handle = materials_add(&r.materials, params) or_return
+	handle = materials_add(&r.materials, params, props) or_return
 	new_variants := materials_take_new_variants(&r.materials)
 	for variant in new_variants {
 		passes_add_variant(&r.passes, r.device, &r.pipelines, &r.shaders, r.materials, variant)
@@ -343,12 +335,13 @@ renderer_replace_material :: proc(
 	params: $P,
 	props := Material_Properties {},
 ) -> Material_Error {
-	materials_replace(&r.materials, r.frame_ring, handle, params) or_return
+	materials_replace(&r.materials, r.frame_ring, handle, params, props) or_return
 	new_variants := materials_take_new_variants(&r.materials)
 	for variant in new_variants {
 		passes_add_variant(&r.passes, r.device, &r.pipelines, &r.shaders, r.materials, variant)
 	}
 	delete(new_variants)
+	return nil
 }
 
 renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
@@ -808,20 +801,22 @@ record_draw_commands :: proc(
 		)
 
 		if batch.indexed {
+			stride := Device_Size(size_of(vk.DrawIndexedIndirectCommand))
 			vk.CmdDrawIndexedIndirect(
 				commands, 
 				frame_data.indexed_commands.buffer_handle,
-				frame_data.indexed_commands.offset + Device_Size(batch.first_command),
+				frame_data.indexed_commands.offset + Device_Size(batch.first_command) * stride,
 				batch.command_count,
-				size_of(vk.DrawIndexedIndirectCommand),
+				u32(stride),
 			)
 		} else {
+			stride := Device_Size(size_of(vk.DrawIndirectCommand))
 			vk.CmdDrawIndirect(
 				commands,
 				frame_data.non_indexed_commands.buffer_handle,
-				frame_data.non_indexed_commands.offset + Device_Size(batch.first_command),
+				frame_data.non_indexed_commands.offset + Device_Size(batch.first_command) * stride,
 				batch.command_count,
-				size_of(vk.DrawIndirectCommand),
+				u32(stride),
 			)
 		}
 	}
@@ -863,148 +858,3 @@ create_depth_texture :: proc(r: ^Renderer) -> Texture_Error {
 destroy_depth_texture :: proc(r: ^Renderer) {
 	texture_destroy(&r.depth_texture, r.device)
 }
-
-/*
-@(require_results)
-create_pipeline_layout :: proc(r: ^Renderer) -> vk.Result {
-	set_layouts := []vk.DescriptorSetLayout {
-		textures_get_sampler_set_layout(r.textures),
-		textures_get_texture_set_layout(r.textures),
-	}
-	push_constant_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX, .FRAGMENT},
-		offset = 0,
-		size = u32(size_of(Push_Constants_Data)),
-	}
-	layout_info := vk.PipelineLayoutCreateInfo {
-		sType = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount = u32(len(set_layouts)),
-		pSetLayouts = raw_data(set_layouts),
-		pushConstantRangeCount = 1,
-		pPushConstantRanges = &push_constant_range,
-	}
-
-	return vk.CreatePipelineLayout(r.device.logical, &layout_info, nil, &r.pipeline_layout)
-}
-
-@(require_results)
-create_pipeline :: proc(r: ^Renderer) -> vk.Result {
-	vertex_program, _ := shaders_get_program(
-		&r.shaders, 
-		module = "Forward", 
-		entry = "VSMain", 
-		stage = .VERTEX,
-	)
-	fragment_program, _ := shaders_get_program(
-		&r.shaders, 
-		module = "Forward", 
-		entry = "FSMain", 
-		stage = .FRAGMENT,
-	)
-
-	shader_stages := []vk.PipelineShaderStageCreateInfo {
-		shaders_get_stage_info(r.shaders, vertex_program),
-		shaders_get_stage_info(r.shaders, fragment_program),
-	}
-
-	vertex_state := vk.PipelineVertexInputStateCreateInfo {
-		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-	}
-
-	input_assembly_state := vk.PipelineInputAssemblyStateCreateInfo {
-		sType = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		topology = .TRIANGLE_LIST,
-	}
-
-	raster_state := vk.PipelineRasterizationStateCreateInfo {
-		sType = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		lineWidth = 1,
-		polygonMode = .FILL,
-		cullMode = {.BACK},
-		frontFace = .COUNTER_CLOCKWISE,
-	}
-
-	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
-		sType = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		depthTestEnable = true,
-		depthWriteEnable = true,
-		depthCompareOp = .GREATER_OR_EQUAL,
-	}
-
-	viewport_state := vk.PipelineViewportStateCreateInfo {
-		sType = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-		viewportCount = 1,
-		scissorCount = 1,
-	}
-
-	sample_mask := ~vk.SampleMask(0)
-	ms_state := vk.PipelineMultisampleStateCreateInfo {
-		sType = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		pSampleMask = &sample_mask,
-		rasterizationSamples = {._1},
-	}
-
-	blend_attachment := vk.PipelineColorBlendAttachmentState {
-		colorWriteMask = {.R, .G, .B, .A},
-	}
-
-	blend_state := vk.PipelineColorBlendStateCreateInfo {
-		sType = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		attachmentCount = 1,
-		pAttachments = &blend_attachment,
-	}
-
-	dynamic_states := []vk.DynamicState {.VIEWPORT, .SCISSOR}
-	dynamic_state := vk.PipelineDynamicStateCreateInfo {
-		sType = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		dynamicStateCount = u32(len(dynamic_states)),
-		pDynamicStates = raw_data(dynamic_states),
-	}
-
-	color_attachment_format := r.surface.format
-	rendering_info := vk.PipelineRenderingCreateInfo {
-		sType = .PIPELINE_RENDERING_CREATE_INFO,
-		colorAttachmentCount = 1,
-		pColorAttachmentFormats = &color_attachment_format,
-		depthAttachmentFormat = r.depth_texture.format,
-	}
-
-	pipeline_info := vk.GraphicsPipelineCreateInfo {
-		sType = .GRAPHICS_PIPELINE_CREATE_INFO,
-		pNext = rawptr(&rendering_info),
-		layout = r.pipeline_layout,
-		stageCount = 2,
-		pStages = raw_data(shader_stages),
-		pVertexInputState = &vertex_state,
-		pInputAssemblyState = &input_assembly_state,
-		pRasterizationState = &raster_state,
-		pDepthStencilState = &depth_stencil_state,
-		pViewportState = &viewport_state,
-		pMultisampleState = &ms_state,
-		pColorBlendState = &blend_state,
-		pDynamicState = &dynamic_state,
-	}
-
-	pipeline: vk.Pipeline
-	vk.CreateGraphicsPipelines(r.device.logical, 0, 1, &pipeline_info, nil, &pipeline) or_return
-
-	destroy_pipeline(r)
-	r.pipeline = pipeline
-	return nil
-}
-
-destroy_pipeline_layout :: proc(r: ^Renderer) {
-	if r.pipeline_layout != 0 {
-		vk.DestroyPipelineLayout(r.device.logical, r.pipeline_layout, nil)
-		r.pipeline_layout = 0
-	}
-}
-
-destroy_pipeline :: proc(r: ^Renderer) {
-	if r.pipeline != 0 {
-		vk.DestroyPipeline(r.device.logical, r.pipeline, nil)
-		r.pipeline = 0
-	}
-}
-
-*/
