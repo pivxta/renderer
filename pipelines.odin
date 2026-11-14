@@ -1,4 +1,9 @@
 package main
+import "core:os"
+import "core:fmt"
+import "core:log"
+import "core:strings"
+import "core:path/filepath"
 import "core:container/queue"
 import vk "vendor:vulkan"
 
@@ -93,11 +98,11 @@ pipelines_init :: proc(
 	}
 	vk.CreatePipelineLayout(device.logical, &layout_info, nil, &pipelines.layout) or_return
 
-	// TODO: Load the pipeline cache from a file
+	cache_data := load_pipeline_cache_data(device)
 	cache_info := vk.PipelineCacheCreateInfo {
 		sType           = .PIPELINE_CACHE_CREATE_INFO,
-		initialDataSize = 0,
-		pInitialData    = nil,
+		initialDataSize = len(cache_data),
+		pInitialData    = raw_data(cache_data),
 	}
 	vk.CreatePipelineCache(device.logical, &cache_info, nil, &pipelines.cache) or_return
 
@@ -109,7 +114,55 @@ pipelines_init :: proc(
 	return .SUCCESS
 }
 
+@(private = "file")
+load_pipeline_cache_data :: proc(
+	device: Device, 
+	allocator := context.temp_allocator,
+) -> []byte {
+	cache_path, path_ok := get_pipeline_cache_path(device, context.temp_allocator)
+	if !path_ok {
+		log.infof("Failed to find pipeline cache path")
+		return nil
+	}
+
+	cache_data, data_err := os.read_entire_file(cache_path, allocator)
+	if data_err != nil {
+		log.infof("No pipeline cache found")
+		return nil
+	}
+
+	if !is_cache_valid(device, cache_data) {
+		log.infof("Pipeline cache file '%s' is corrupted or invalid", cache_path)
+		return nil
+	}
+
+	log.infof("Loading pipeline cache from '%s'", cache_path)
+	return cache_data
+}
+
+@(private = "file")
+is_cache_valid :: proc(device: Device, data: []byte) -> bool {
+	Pipeline_Cache_Header :: struct #packed {
+		size:           u32,
+		version:        u32,
+		vendor_id:      u32,
+		device_id:      u32,
+		cache_uuid:     [vk.UUID_SIZE]u8,
+	}
+
+	if len(data) < size_of(Pipeline_Cache_Header) {
+		return false
+	}
+
+	header := (^Pipeline_Cache_Header)(raw_data(data))^
+	return header.version == u32(vk.PipelineCacheHeaderVersion.ONE) &&
+	       header.vendor_id == device.properties.vendorID &&
+		   header.device_id == device.properties.deviceID &&
+		   header.cache_uuid == device.properties.pipelineCacheUUID
+}
+
 pipelines_destroy :: proc(pipelines: ^Pipelines, device: Device) {
+	store_pipeline_cache_data(device, pipelines.cache)
 	pipelines_destroy_pending(pipelines, device, max(u64))
 
 	for entry in pipelines.graphics {
@@ -130,6 +183,81 @@ pipelines_destroy :: proc(pipelines: ^Pipelines, device: Device) {
 	if pipelines.layout != 0 {
 		vk.DestroyPipelineLayout(device.logical, pipelines.layout, nil)
 	}
+}
+
+@(private = "file")
+store_pipeline_cache_data :: proc(device: Device, cache: vk.PipelineCache) {
+	data_size: int
+	result := vk.GetPipelineCacheData(device.logical, cache, &data_size, nil)
+	if result != .SUCCESS {
+		log.errorf("Failed to get pipeline cache data size")
+		return
+	}
+
+	data := make([]byte, data_size, context.temp_allocator)
+	result = vk.GetPipelineCacheData(device.logical, cache, &data_size, raw_data(data))
+	if result != .SUCCESS {
+		log.errorf("Failed to get pipeline cache data")
+		return
+	}
+
+	cache_path, ok := get_pipeline_cache_path(device, context.temp_allocator)
+	if !ok {
+		log.errorf("Failed to find pipeline cache path")
+		return
+	}
+
+	_ = os.make_directory_all(filepath.dir(cache_path))
+	if err := write_file_atomic(cache_path, data); err != nil {
+		log.errorf("Failed to write to cache file '%s': %v", cache_path, err)
+		return
+	}
+
+	log.infof("Saved pipeline cache at '%s'", cache_path)
+}
+
+@(private = "file")
+write_file_atomic :: proc(path: string, data: []byte) -> (err: os.Error) {
+	dir := filepath.dir(path)
+	pat := fmt.tprintf("%s.*.tmp", filepath.base(path))
+	file := os.create_temp_file(dir, pat) or_return
+	filename := strings.clone(os.name(file), context.temp_allocator)
+
+	closed, committed := false, false
+	defer {
+		if !closed    { os.close(file) }
+		if !committed { os.remove(filename) }
+	}
+
+	_ = os.write(file, data) or_return
+	os.sync(file)
+
+	closed = true
+	os.close(file) or_return
+	os.rename(filename, path) or_return
+
+	committed = true
+	return nil
+}
+
+@(private = "file")
+get_pipeline_cache_path :: proc(
+	device: Device, 
+	allocator := context.temp_allocator,
+) -> (string, bool) {
+	cache_dir, dir_err := os.user_cache_dir(context.temp_allocator)
+	if dir_err != nil {
+		return {}, false
+	}
+
+	cache_path := fmt.aprintf(
+		"%s/basalt/pipeline/%04x_%04x", 
+		cache_dir,
+		device.properties.vendorID,
+		device.properties.deviceID,
+		allocator = allocator,
+	)
+	return cache_path, true
 }
 
 pipelines_get_or_add :: pipelines_get_or_add_graphics

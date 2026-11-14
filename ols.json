@@ -3,5 +3,5 @@
   "enable_semantic_tokens": true,
   "enable_hover": true,
   "enable_snippets": true,
-  "checker_args": "-vet -vet-style -vet-cast -vet-semicolon"
+  "checker_args": "-vet -strict-style -disallow-do -warnings-as-error"
 }
