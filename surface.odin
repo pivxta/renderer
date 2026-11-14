@@ -38,31 +38,31 @@ Surface_Capabilities :: struct {
 }
 
 @(require_results)
-surface_init :: proc(s: ^Surface, instance: Instance, window: ^Window) -> Surface_Error {
-	s.window = window
-	s.surface = window_create_surface(window, instance) or_return
+surface_init :: proc(surface: ^Surface, instance: Instance, window: ^Window) -> Surface_Error {
+	surface.window = window
+	surface.surface = window_create_surface(window, instance) or_return
 	return nil
 }
 
-surface_destroy :: proc(s: ^Surface, instance: Instance, device: Device) {
-	destroy_swapchain_semaphores(&s.presentable_semaphores, device)
-	destroy_swapchain_textures(&s.textures, device)
-	destroy_swapchain(&s.swapchain, device)
-	if s.surface != 0 {
-		vk.DestroySurfaceKHR(instance.handle, s.surface, nil)
+surface_destroy :: proc(surface: ^Surface, instance: Instance, device: Device) {
+	destroy_swapchain_semaphores(&surface.presentable_semaphores, device)
+	destroy_swapchain_textures(&surface.textures, device)
+	destroy_swapchain(&surface.swapchain, device)
+	if surface.surface != 0 {
+		vk.DestroySurfaceKHR(instance.handle, surface.surface, nil)
 	}
 
-	s^ = {}
+	surface^ = {}
 }
 
 @(require_results)
-surface_should_resize :: proc(s: Surface) -> bool {
-	return s.window.resized
+surface_should_resize :: proc(surface: Surface) -> bool {
+	return surface.window.resized
 }
 
 @(require_results)
-surface_present :: proc(s: Surface, device: Device, texture: Surface_Texture) -> vk.Result {
-	swapchain := s.swapchain
+surface_present :: proc(surface: Surface, device: Device, texture: Surface_Texture) -> vk.Result {
+	swapchain := surface.swapchain
 	semaphore := texture.presentable
 	index := texture.index
 	present_info := vk.PresentInfoKHR {
@@ -78,7 +78,7 @@ surface_present :: proc(s: Surface, device: Device, texture: Surface_Texture) ->
 
 @(require_results)
 surface_acquire_texture :: proc(
-	s: Surface,
+	surface: Surface,
 	device: Device,
 	available: vk.Semaphore,
 ) -> (
@@ -86,7 +86,14 @@ surface_acquire_texture :: proc(
 	result: vk.Result,
 ) {
 	index: u32
-	result = vk.AcquireNextImageKHR(device.logical, s.swapchain, max(u64), available, 0, &index)
+	result = vk.AcquireNextImageKHR(
+		device.logical,
+		surface.swapchain,
+		max(u64),
+		available,
+		0,
+		&index,
+	)
 
 	if result != .SUCCESS && result != .SUBOPTIMAL_KHR {
 		return
@@ -94,16 +101,16 @@ surface_acquire_texture :: proc(
 
 	texture = {
 		index       = index,
-		texture     = &s.textures[index],
-		presentable = s.presentable_semaphores[index],
+		texture     = &surface.textures[index],
+		presentable = surface.presentable_semaphores[index],
 	}
 
 	return
 }
 
 @(require_results)
-surface_configure :: proc(s: ^Surface, device: Device) -> (err: Surface_Error) {
-	caps := query_surface_capabilities(s^, device, context.temp_allocator) or_return
+surface_configure :: proc(surface: ^Surface, device: Device) -> (err: Surface_Error) {
+	caps := query_surface_capabilities(surface^, device) or_return
 	if len(caps.formats) == 0 {
 		return Surface_Configure_Error.No_Surface_Formats
 	}
@@ -111,7 +118,7 @@ surface_configure :: proc(s: ^Surface, device: Device) -> (err: Surface_Error) {
 		return Surface_Configure_Error.No_Present_Modes
 	}
 
-	extent, ok := pick_extent(caps.caps, s.window)
+	extent, ok := pick_extent(caps.caps, surface.window)
 	if !ok {
 		return nil
 	}
@@ -122,7 +129,7 @@ surface_configure :: proc(s: ^Surface, device: Device) -> (err: Surface_Error) {
 
 	swapchain_info := vk.SwapchainCreateInfoKHR {
 		sType            = .SWAPCHAIN_CREATE_INFO_KHR,
-		surface          = s.surface,
+		surface          = surface.surface,
 		minImageCount    = min_image_count,
 		presentMode      = present_mode,
 		imageFormat      = format.format,
@@ -133,13 +140,13 @@ surface_configure :: proc(s: ^Surface, device: Device) -> (err: Surface_Error) {
 		preTransform     = caps.caps.currentTransform,
 		compositeAlpha   = {.OPAQUE},
 		clipped          = true,
-		oldSwapchain     = s.swapchain,
+		oldSwapchain     = surface.swapchain,
 	}
 
 	swapchain: vk.SwapchainKHR
 	vk.CreateSwapchainKHR(device.logical, &swapchain_info, nil, &swapchain) or_return
 	defer if err != nil {
-		destroy_swapchain(&s.swapchain, device)
+		destroy_swapchain(&surface.swapchain, device)
 	}
 
 	textures := create_swapchain_textures(device, swapchain, format.format, extent) or_return
@@ -152,16 +159,16 @@ surface_configure :: proc(s: ^Surface, device: Device) -> (err: Surface_Error) {
 		destroy_swapchain_semaphores(&semaphores, device)
 	}
 
-	destroy_swapchain(&s.swapchain, device)
-	destroy_swapchain_textures(&s.textures, device)
-	destroy_swapchain_semaphores(&s.presentable_semaphores, device)
+	destroy_swapchain(&surface.swapchain, device)
+	destroy_swapchain_textures(&surface.textures, device)
+	destroy_swapchain_semaphores(&surface.presentable_semaphores, device)
 
-	s.swapchain = swapchain
-	s.extent = extent
-	s.format = format.format
-	s.colorspace = format.colorSpace
-	s.textures = textures
-	s.presentable_semaphores = semaphores
+	surface.swapchain = swapchain
+	surface.extent = extent
+	surface.format = format.format
+	surface.colorspace = format.colorSpace
+	surface.textures = textures
+	surface.presentable_semaphores = semaphores
 	return nil
 }
 
@@ -308,7 +315,7 @@ pick_min_image_count :: proc(caps: vk.SurfaceCapabilitiesKHR) -> u32 {
 query_surface_capabilities :: proc(
 	surface: Surface,
 	device: Device,
-	allocator := context.allocator,
+	allocator := context.temp_allocator,
 ) -> (
 	caps: Surface_Capabilities,
 	result: vk.Result,

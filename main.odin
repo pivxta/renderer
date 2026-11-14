@@ -129,6 +129,7 @@ main :: proc() {
 	ball_material, _ := renderer_add_material(
 		renderer,
 		Unlit_Material{color_factor = {1.0, 1.0, 0.5}, sampler = .Linear_Repeat},
+		Material_Properties{double_sided = true},
 	)
 
 	rows := 10

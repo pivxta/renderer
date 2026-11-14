@@ -44,40 +44,40 @@ SAMPLED_USAGE :: Resource_Usage {
 
 @(require_results)
 upload_queue_init :: proc(
-	u: ^Upload_Queue,
+	upload_queue: ^Upload_Queue,
 	device: Device,
 	staging_capacity: Device_Size,
 ) -> (
 	err: Buffer_Error,
 ) {
 	defer if err != nil {
-		upload_queue_destroy(u, device)
+		upload_queue_destroy(upload_queue, device)
 	}
 
-	staging_init(&u.staging, device, staging_capacity) or_return
-	queue.init(&u.pending)
+	staging_init(&upload_queue.staging, device, staging_capacity) or_return
+	queue.init(&upload_queue.pending)
 	return
 }
 
-upload_queue_destroy :: proc(u: ^Upload_Queue, device: Device) {
-	queue.destroy(&u.pending)
-	staging_destroy(&u.staging, device)
-	u^ = {}
+upload_queue_destroy :: proc(upload_queue: ^Upload_Queue, device: Device) {
+	queue.destroy(&upload_queue.pending)
+	staging_destroy(&upload_queue.staging, device)
+	upload_queue^ = {}
 }
 
-upload_queue_retire :: proc(u: ^Upload_Queue, finished_value: u64) {
-	staging_retire(&u.staging, finished_value)
+upload_queue_retire :: proc(upload_queue: ^Upload_Queue, finished_value: u64) {
+	staging_retire(&upload_queue.staging, finished_value)
 }
 
 @(require_results)
-upload_queue_flush :: proc(u: ^Upload_Queue, device: Device) -> (err: Buffer_Error) {
-	staging_flush(&u.staging, device) or_return
+upload_queue_flush :: proc(upload_queue: ^Upload_Queue, device: Device) -> (err: Buffer_Error) {
+	staging_flush(&upload_queue.staging, device) or_return
 	return
 }
 
 @(require_results)
 upload_buffer_reserve :: proc(
-	uqueue: ^Upload_Queue,
+	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	buffer: Buffer,
 	size: Maybe(int) = nil,
@@ -108,10 +108,10 @@ upload_buffer_reserve :: proc(
 		buffer_usage = usage.?
 	}
 
-	staging := staging_make(&uqueue.staging, frame_ring, []u8, staging_size) or_return
+	staging := staging_make(&upload_queue.staging, frame_ring, []u8, staging_size) or_return
 
 	queue.enqueue(
-		&uqueue.pending,
+		&upload_queue.pending,
 		Buffer_Upload {
 			buffer = buffer.handle,
 			usage = buffer_usage,
@@ -125,7 +125,7 @@ upload_buffer_reserve :: proc(
 
 @(require_results)
 upload_buffer :: proc(
-	uqueue: ^Upload_Queue,
+	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	buffer: Buffer,
 	bytes: []byte,
@@ -135,7 +135,7 @@ upload_buffer :: proc(
 	ok: bool,
 ) {
 	staging := upload_buffer_reserve(
-		uqueue,
+		upload_queue,
 		frame_ring,
 		buffer,
 		len(bytes),
@@ -150,7 +150,7 @@ upload_buffer :: proc(
 
 @(require_results)
 upload_subbuffer_reserve :: proc(
-	uqueue: ^Upload_Queue,
+	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	buffer: Pool_Subbuffer($T),
 	count: int,
@@ -169,10 +169,10 @@ upload_subbuffer_reserve :: proc(
 	}
 
 	assert(.TRANSFER_DST in buffer.buffer_usage)
-	staging := staging_make(&uqueue.staging, frame_ring, []u8, size) or_return
+	staging := staging_make(&upload_queue.staging, frame_ring, []u8, size) or_return
 
 	queue.enqueue(
-		&uqueue.pending,
+		&upload_queue.pending,
 		Buffer_Upload {
 			buffer = buffer.buffer_handle,
 			offset = buffer.offset + offset,
@@ -186,7 +186,7 @@ upload_subbuffer_reserve :: proc(
 
 @(require_results)
 upload_subbuffer :: proc(
-	uqueue: ^Upload_Queue,
+	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	buffer: Pool_Subbuffer($T),
 	values: []T,
@@ -196,7 +196,7 @@ upload_subbuffer :: proc(
 	ok: bool,
 ) {
 	staging := upload_subbuffer_reserve(
-		uqueue,
+		upload_queue,
 		frame_ring,
 		buffer,
 		len(values),
@@ -211,7 +211,7 @@ upload_subbuffer :: proc(
 
 @(require_results)
 upload_texture :: proc(
-	uqueue: ^Upload_Queue,
+	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	texture: Texture,
 	image: Image,
@@ -229,9 +229,9 @@ upload_texture :: proc(
 	assert(layer >= 0 && layer < int(texture.array_layers))
 	assert(.TRANSFER_DST in texture.usage)
 
-	staging := staging_slice_clone(&uqueue.staging, frame_ring, image.bytes) or_return
+	staging := staging_slice_clone(&upload_queue.staging, frame_ring, image.bytes) or_return
 	queue.enqueue(
-		&uqueue.pending,
+		&upload_queue.pending,
 		Texture_Upload{texture = texture, usage = usage, staging = staging, layer = u32(layer)},
 	)
 
@@ -281,10 +281,10 @@ resource_usage_from_buffer_usage :: proc(usage: vk.BufferUsageFlags) -> (r: Reso
 	return
 }
 
-upload_queue_record_commands :: proc(u: ^Upload_Queue, commands: vk.CommandBuffer) {
+upload_queue_record_commands :: proc(upload_queue: ^Upload_Queue, commands: vk.CommandBuffer) {
 	pre_barriers := make([dynamic]vk.ImageMemoryBarrier2, context.temp_allocator)
-	for i in 0 ..< queue.len(u.pending) {
-		switch upload in queue.get(&u.pending, i) {
+	for i in 0 ..< queue.len(upload_queue.pending) {
+		switch upload in queue.get(&upload_queue.pending, i) {
 		case Buffer_Upload:
 		// No pre-barriers for buffers
 		case Texture_Upload:
@@ -305,8 +305,8 @@ upload_queue_record_commands :: proc(u: ^Upload_Queue, commands: vk.CommandBuffe
 
 	image_barriers := make([dynamic]vk.ImageMemoryBarrier2, context.temp_allocator)
 	buffer_barriers := make([dynamic]vk.BufferMemoryBarrier2, context.temp_allocator)
-	for queue.len(u.pending) > 0 {
-		switch upload in queue.dequeue(&u.pending) {
+	for queue.len(upload_queue.pending) > 0 {
+		switch upload in queue.dequeue(&upload_queue.pending) {
 		case Buffer_Upload:
 			record_buffer_upload(commands, &buffer_barriers, upload)
 		case Texture_Upload:

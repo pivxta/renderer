@@ -215,18 +215,18 @@ check_extension :: proc(props: []vk.ExtensionProperties, extension: cstring) -> 
 	return false
 }
 
-instance_destroy :: proc(i: ^Instance) {
-	if i.handle != nil && i.debug_messenger != 0 {
-		vk.DestroyDebugUtilsMessengerEXT(i.handle, i.debug_messenger, nil)
+instance_destroy :: proc(instance: ^Instance) {
+	if instance.handle != nil && instance.debug_messenger != 0 {
+		vk.DestroyDebugUtilsMessengerEXT(instance.handle, instance.debug_messenger, nil)
 	}
-	if i.handle != nil {
-		vk.DestroyInstance(i.handle, nil)
+	if instance.handle != nil {
+		vk.DestroyInstance(instance.handle, nil)
 	}
-	if i.messenger_context != nil {
-		log.destroy_console_logger(i.messenger_context.logger)
-		free(i.messenger_context)
+	if instance.messenger_context != nil {
+		log.destroy_console_logger(instance.messenger_context.logger)
+		free(instance.messenger_context)
 	}
-	i^ = {}
+	instance^ = {}
 }
 
 @(private = "file")

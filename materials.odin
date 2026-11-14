@@ -167,13 +167,13 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 
 materials_add :: proc(
 	materials: ^Materials,
-	params: $P,
-	props := Material_Properties{},
+	params: $Params,
+	props: Material_Properties,
 ) -> (
 	handle: Material_Handle,
 	err: Material_Error,
 ) {
-	type, type_id := get_params_material_type(materials, P) or_return
+	type, type_id := get_params_material_type(materials, Params) or_return
 	data, ok := pool_make(&materials.pool, []byte, type.data_size, type.data_align)
 	if !ok {
 		return {}, .Out_Of_Gpu_Memory
@@ -201,15 +201,15 @@ materials_replace :: proc(
 	materials: ^Materials,
 	frame_ring: Frame_Ring,
 	handle: Material_Handle,
-	params: $P,
-	props := Material_Properties{},
+	params: $Params,
+	props: Material_Properties,
 ) -> Material_Error {
 	slot, slot_ok := handle_map.get(&materials.handle_map, handle)
 	if !slot_ok {
 		return .Invalid_Handle
 	}
 
-	type, type_id := get_params_material_type(materials, P) or_return
+	type, type_id := get_params_material_type(materials, Params) or_return
 	new_data, new_data_ok := pool_make(&materials.pool, []byte, type.data_size, type.data_align)
 	if !new_data_ok {
 		return .Out_Of_Gpu_Memory
@@ -248,13 +248,13 @@ add_variant :: proc(
 @(private = "file", require_results)
 get_params_material_type :: proc(
 	materials: ^Materials,
-	$P: typeid,
+	$Params: typeid,
 ) -> (
 	^Material_Type,
 	Material_Type_Id,
 	Material_Error,
 ) {
-	type_id, ok := materials.type_by_params[P]
+	type_id, ok := materials.type_by_params[Params]
 	if !ok {
 		return nil, 0, .Type_Not_Registered
 	}
@@ -263,9 +263,9 @@ get_params_material_type :: proc(
 }
 
 @(private = "file", require_results)
-make_params :: proc(params: $P, allocator := context.allocator) -> []byte {
-	params_bytes := make([]byte, size_of(P), allocator)
-	params_typed := slice.reinterpret([]P, params_bytes)
+make_params :: proc(params: $Params, allocator := context.allocator) -> []byte {
+	params_bytes := make([]byte, size_of(Params), allocator)
+	params_typed := slice.reinterpret([]Params, params_bytes)
 	params_typed[0] = params
 	return params_bytes
 }
@@ -513,35 +513,35 @@ collect_textures :: proc(out: ^[dynamic]Texture_Handle, value: any) {
 
 materials_register_type :: proc(
 	materials: ^Materials,
-	$P, $D: typeid,
+	$Params, $Data: typeid,
 	name: string,
-	resolve: proc(_: ^Textures, _: P) -> D,
+	resolve: proc(textures: ^Textures, params: Params) -> Data,
 ) -> Material_Type_Id {
-	assert(P not_in materials.type_by_params, "Material type already registered")
+	assert(Params not_in materials.type_by_params, "Material type already registered")
 
 	id := Material_Type_Id(len(materials.types))
 	append(
 		&materials.types,
 		{
 			name = strings.clone(name, materials.allocator),
-			params_type = P,
-			data_size = size_of(D),
-			data_align = max(align_of(D), 16),
+			params_type = Params,
+			data_size = size_of(Data),
+			data_align = max(align_of(Data), 16),
 			resolve_proc = rawptr(resolve),
-			resolve = make_trampoline(P, D),
+			resolve = make_trampoline(Params, Data),
 		},
 	)
 
-	materials.type_by_params[P] = id
+	materials.type_by_params[Params] = id
 	return id
 }
 
 @(private = "file")
-make_trampoline :: proc($P, $D: typeid) -> Resolve_Trampoline {
+make_trampoline :: proc($Params, $Data: typeid) -> Resolve_Trampoline {
 	return proc(textures: ^Textures, out: []byte, params: rawptr, resolve: rawptr) {
-			typed_resolve := cast(proc(_: ^Textures, _: P) -> D)resolve
-			resolved_data := typed_resolve(textures, (^P)(params)^)
-			assert(len(out) == size_of(D))
+			typed_resolve := cast(proc(_: ^Textures, _: Params) -> Data)resolve
+			resolved_data := typed_resolve(textures, (^Params)(params)^)
+			assert(len(out) == size_of(Data))
 			copy(out, mem.ptr_to_bytes(&resolved_data))
 		}
 }
@@ -549,13 +549,13 @@ make_trampoline :: proc($P, $D: typeid) -> Resolve_Trampoline {
 materials_get :: proc(
 	materials: ^Materials,
 	handle: Material_Handle,
-	$P: typeid,
+	$Params: typeid,
 ) -> (
-	P,
+	Params,
 	Material_Error,
 ) {
 	if slot, slot_ok := handle_map.get(&materials.handle_map, handle); slot_ok {
-		type_id, type_ok := materials.type_by_params[P]
+		type_id, type_ok := materials.type_by_params[Params]
 		if !type_ok {
 			return {}, .Type_Not_Registered
 		}
@@ -563,7 +563,7 @@ materials_get :: proc(
 			return {}, .Type_Does_Not_Match
 		}
 
-		typed_params := slice.reinterpret([]P, slot.params)
+		typed_params := slice.reinterpret([]Params, slot.params)
 		return typed_params[0], nil
 	}
 	return {}, .Invalid_Handle
@@ -611,7 +611,7 @@ materials_get_variant :: proc(
 
 materials_take_new_variants :: proc(
 	materials: ^Materials,
-	allocator := context.allocator,
+	allocator := context.temp_allocator,
 ) -> []Material_Variant_Id {
 	assert(materials != nil)
 	new_variants := slice.clone(materials.new_variants[:], allocator)

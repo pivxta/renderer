@@ -32,16 +32,16 @@ Frame_Ring_Error :: union #shared_nil {
 
 @(require_results)
 frame_ring_init :: proc(
-	f: ^Frame_Ring,
+	frame_ring: ^Frame_Ring,
 	device: Device,
 	scratch_capacity: Device_Size,
 ) -> (
 	err: Frame_Ring_Error,
 ) {
-	f^ = {}
+	frame_ring^ = {}
 
 	defer if err != nil {
-		frame_ring_destroy(f, device)
+		frame_ring_destroy(frame_ring, device)
 	}
 
 	// Create command pool
@@ -51,20 +51,20 @@ frame_ring_init :: proc(
 		queueFamilyIndex = device.graphics_queue_family,
 	}
 
-	vk.CreateCommandPool(device.logical, &pool_info, nil, &f.command_pool) or_return
+	vk.CreateCommandPool(device.logical, &pool_info, nil, &frame_ring.command_pool) or_return
 
 	// Allocate command buffers
 	alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		level              = .PRIMARY,
-		commandPool        = f.command_pool,
+		commandPool        = frame_ring.command_pool,
 		commandBufferCount = MAX_FRAMES_IN_FLIGHT,
 	}
 
 	vk.AllocateCommandBuffers(
 		device.logical,
 		&alloc_info,
-		raw_data(f.command_buffers[:]),
+		raw_data(frame_ring.command_buffers[:]),
 	) or_return
 
 	// Create timeline semaphore
@@ -77,58 +77,63 @@ frame_ring_init :: proc(
 		sType = .SEMAPHORE_CREATE_INFO,
 		pNext = &timeline_type_info,
 	}
-	vk.CreateSemaphore(device.logical, &timeline_info, nil, &f.timeline) or_return
+	vk.CreateSemaphore(device.logical, &timeline_info, nil, &frame_ring.timeline) or_return
 
 	// Create image semaphores
 	semaphore_info := vk.SemaphoreCreateInfo {
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
-		vk.CreateSemaphore(device.logical, &semaphore_info, nil, &f.image_available[i]) or_return
+		vk.CreateSemaphore(
+			device.logical,
+			&semaphore_info,
+			nil,
+			&frame_ring.image_available[i],
+		) or_return
 	}
 
 	// Create scratch buffer
-	scratch_init(&f.scratch, device, scratch_capacity) or_return
+	scratch_init(&frame_ring.scratch, device, scratch_capacity) or_return
 
 	return
 }
 
-frame_ring_destroy :: proc(f: ^Frame_Ring, device: Device) {
-	scratch_destroy(&f.scratch, device)
+frame_ring_destroy :: proc(frame_ring: ^Frame_Ring, device: Device) {
+	scratch_destroy(&frame_ring.scratch, device)
 
-	if f.command_pool != 0 {
-		vk.DestroyCommandPool(device.logical, f.command_pool, nil)
-		f.command_pool = 0
+	if frame_ring.command_pool != 0 {
+		vk.DestroyCommandPool(device.logical, frame_ring.command_pool, nil)
+		frame_ring.command_pool = 0
 	}
 
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
-		f.command_buffers[i] = nil
+		frame_ring.command_buffers[i] = nil
 	}
 
-	if f.timeline != 0 {
-		vk.DestroySemaphore(device.logical, f.timeline, nil)
-		f.timeline = 0
+	if frame_ring.timeline != 0 {
+		vk.DestroySemaphore(device.logical, frame_ring.timeline, nil)
+		frame_ring.timeline = 0
 	}
 
 	for i in 0 ..< MAX_FRAMES_IN_FLIGHT {
-		if f.image_available[i] != 0 {
-			vk.DestroySemaphore(device.logical, f.image_available[i], nil)
-			f.image_available[i] = 0
+		if frame_ring.image_available[i] != 0 {
+			vk.DestroySemaphore(device.logical, frame_ring.image_available[i], nil)
+			frame_ring.image_available[i] = 0
 		}
 	}
 }
 
 @(require_results)
 frame_begin :: proc(
-	f: ^Frame_Ring,
+	frame_ring: ^Frame_Ring,
 	device: Device,
 ) -> (
 	ctx: Frame_Context,
 	err: Frame_Ring_Error,
 ) {
 	// Wait for the previous frame in the same ring position to finish
-	timeline_semaphore := f.timeline
-	timeline_signal := f.timeline_signals[f.ring_index]
+	timeline_semaphore := frame_ring.timeline
+	timeline_signal := frame_ring.timeline_signals[frame_ring.ring_index]
 	wait_info := vk.SemaphoreWaitInfo {
 		sType          = .SEMAPHORE_WAIT_INFO,
 		semaphoreCount = 1,
@@ -139,13 +144,13 @@ frame_begin :: proc(
 
 	// Setup scratch buffer
 	finished_value: u64
-	current_value := f.timeline_value + 1
-	vk.GetSemaphoreCounterValue(device.logical, f.timeline, &finished_value) or_return
-	scratch_retire(&f.scratch, finished_value)
-	scratch_begin(&f.scratch, current_value)
+	current_value := frame_ring.timeline_value + 1
+	vk.GetSemaphoreCounterValue(device.logical, frame_ring.timeline, &finished_value) or_return
+	scratch_retire(&frame_ring.scratch, finished_value)
+	scratch_begin(&frame_ring.scratch, current_value)
 
 	// Begin command buffer
-	command_buffer := f.command_buffers[f.ring_index]
+	command_buffer := frame_ring.command_buffers[frame_ring.ring_index]
 	vk.ResetCommandBuffer(command_buffer, {}) or_return
 	vk.BeginCommandBuffer(
 		command_buffer,
@@ -153,32 +158,32 @@ frame_begin :: proc(
 	) or_return
 
 	ctx.command_buffer = command_buffer
-	ctx.image_available = f.image_available[f.ring_index]
+	ctx.image_available = frame_ring.image_available[frame_ring.ring_index]
 	ctx.finished_timeline_value = finished_value
 	ctx.current_timeline_value = current_value
-	ctx.frame_counter = f.frame_counter
-	ctx.ring_index = f.ring_index
-	ctx.scratch = &f.scratch
+	ctx.frame_counter = frame_ring.frame_counter
+	ctx.ring_index = frame_ring.ring_index
+	ctx.scratch = &frame_ring.scratch
 	return
 }
 
 @(require_results)
 frame_submit :: proc(
-	f: ^Frame_Ring,
+	frame_ring: ^Frame_Ring,
 	device: Device,
 	frame: Frame_Context,
 	signal: vk.Semaphore,
 ) -> Frame_Ring_Error {
-	assert(frame.frame_counter == f.frame_counter)
-	assert(frame.ring_index == f.ring_index)
+	assert(frame.frame_counter == frame_ring.frame_counter)
+	assert(frame.ring_index == frame_ring.ring_index)
 
-	scratch_flush(&f.scratch, device) or_return
+	scratch_flush(&frame_ring.scratch, device) or_return
 
-	command_buffer := f.command_buffers[f.ring_index]
+	command_buffer := frame_ring.command_buffers[frame_ring.ring_index]
 	vk.EndCommandBuffer(command_buffer) or_return
 
-	signal_value := f.timeline_value + 1
-	image_available := f.image_available[f.ring_index]
+	signal_value := frame_ring.timeline_value + 1
+	image_available := frame_ring.image_available[frame_ring.ring_index]
 	cmd_buffer_info := vk.CommandBufferSubmitInfo {
 		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
 		commandBuffer = command_buffer,
@@ -192,7 +197,7 @@ frame_submit :: proc(
 		{sType = .SEMAPHORE_SUBMIT_INFO, semaphore = signal, stageMask = {.ALL_COMMANDS}},
 		{
 			sType = .SEMAPHORE_SUBMIT_INFO,
-			semaphore = f.timeline,
+			semaphore = frame_ring.timeline,
 			value = signal_value,
 			stageMask = {.ALL_COMMANDS},
 		},
@@ -209,10 +214,10 @@ frame_submit :: proc(
 
 	vk.QueueSubmit2(device.graphics_queue, 1, &submit_info, 0) or_return
 
-	scratch_commit(&f.scratch)
-	f.timeline_value = signal_value
-	f.timeline_signals[f.ring_index] = signal_value
-	f.ring_index = (f.ring_index + 1) % MAX_FRAMES_IN_FLIGHT
-	f.frame_counter += 1
+	scratch_commit(&frame_ring.scratch)
+	frame_ring.timeline_value = signal_value
+	frame_ring.timeline_signals[frame_ring.ring_index] = signal_value
+	frame_ring.ring_index = (frame_ring.ring_index + 1) % MAX_FRAMES_IN_FLIGHT
+	frame_ring.frame_counter += 1
 	return nil
 }

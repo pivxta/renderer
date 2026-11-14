@@ -209,10 +209,7 @@ textures_destroy :: proc(textures: ^Textures, device: Device) {
 }
 
 @(require_results)
-textures_reserve :: proc(
-	textures: ^Textures,
-	fallback := Texture_Fallback.Color_Default,
-) -> Texture_Handle {
+textures_reserve :: proc(textures: ^Textures, fallback: Texture_Fallback) -> Texture_Handle {
 	return handle_map.add(
 		&textures.handle_map,
 		{texture_handle = nil, fallback_handle = textures.fallbacks[fallback]},
@@ -223,12 +220,12 @@ textures_reserve :: proc(
 textures_add :: proc(
 	textures: ^Textures,
 	device: Device,
+	frame_ring: Frame_Ring,
 	mipgen_queue: ^Mipgen_Queue,
 	upload_queue: ^Upload_Queue,
-	frame_ring: Frame_Ring,
 	image: Image,
-	options := Texture_Options{},
-	fallback := Texture_Fallback.Color_Error,
+	options: Texture_Options,
+	fallback: Texture_Fallback,
 ) -> (
 	handle: Texture_Handle,
 	err: Texture_Error,
@@ -237,9 +234,9 @@ textures_add :: proc(
 	textures_replace(
 		textures,
 		device,
+		frame_ring,
 		mipgen_queue,
 		upload_queue,
-		frame_ring,
 		handle,
 		image,
 		options,
@@ -252,12 +249,12 @@ textures_add :: proc(
 textures_replace :: proc(
 	textures: ^Textures,
 	device: Device,
+	frame_ring: Frame_Ring,
 	mipgen_queue: ^Mipgen_Queue,
 	upload_queue: ^Upload_Queue,
-	frame_ring: Frame_Ring,
 	handle: Texture_Handle,
 	image: Image,
-	options := Texture_Options{},
+	options: Texture_Options,
 	update := true,
 ) -> Texture_Error {
 	slot, slot_ok := handle_map.get(&textures.handle_map, handle)
@@ -342,7 +339,7 @@ textures_remove :: proc(textures: ^Textures, frame_ring: Frame_Ring, handle: Tex
 @(require_results)
 textures_take_updates :: proc(
 	textures: ^Textures,
-	allocator := context.allocator,
+	allocator := context.temp_allocator,
 ) -> [dynamic]Texture_Update {
 	updated := slice.clone_to_dynamic(textures.updates[:], allocator)
 	clear(&textures.updates)

@@ -32,39 +32,39 @@ Device_Error :: union #shared_nil {
 }
 
 @(require_results)
-device_init :: proc(d: ^Device, instance: Instance, surface: Surface) -> (err: Device_Error) {
+device_init :: proc(device: ^Device, instance: Instance, surface: Surface) -> (err: Device_Error) {
 	defer if err != nil {
-		device_destroy(d)
+		device_destroy(device)
 	}
 
-	pick_physical_device(d, instance, surface) or_return
-	create_device_and_queues(d) or_return
-	create_allocator(d, instance) or_return
+	pick_physical_device(device, instance, surface) or_return
+	create_device_and_queues(device) or_return
+	create_allocator(device, instance) or_return
 	return nil
 }
 
-device_destroy :: proc(d: ^Device) {
-	if d.allocator != nil {
-		vma.DestroyAllocator(d.allocator)
+device_destroy :: proc(device: ^Device) {
+	if device.allocator != nil {
+		vma.DestroyAllocator(device.allocator)
 	}
-	if d.logical != nil {
-		vk.DestroyDevice(d.logical, nil)
+	if device.logical != nil {
+		vk.DestroyDevice(device.logical, nil)
 	}
-	d^ = {}
+	device^ = {}
 }
 
 @(private = "file")
-create_allocator :: proc(d: ^Device, instance: Instance) -> Device_Error {
+create_allocator :: proc(device: ^Device, instance: Instance) -> Device_Error {
 	vulkan_functions := vma.create_vulkan_functions()
 	create_info: vma.AllocatorCreateInfo = {
 		flags            = {.BUFFER_DEVICE_ADDRESS},
 		instance         = instance.handle,
-		physicalDevice   = d.physical,
-		device           = d.logical,
+		physicalDevice   = device.physical,
+		device           = device.logical,
 		pVulkanFunctions = &vulkan_functions,
-		vulkanApiVersion = min(d.properties.apiVersion, vk.API_VERSION_1_3),
+		vulkanApiVersion = min(device.properties.apiVersion, vk.API_VERSION_1_3),
 	}
-	vma.CreateAllocator(create_info, &d.allocator) or_return
+	vma.CreateAllocator(create_info, &device.allocator) or_return
 	return nil
 }
 
@@ -92,7 +92,11 @@ Device_Report :: struct {
 }
 
 @(private = "file")
-pick_physical_device :: proc(d: ^Device, instance: Instance, surface: Surface) -> Device_Error {
+pick_physical_device :: proc(
+	device: ^Device,
+	instance: Instance,
+	surface: Surface,
+) -> Device_Error {
 	physical_device_count: u32
 	vk.EnumeratePhysicalDevices(instance.handle, &physical_device_count, nil) or_return
 	physical_devices := make(
@@ -130,9 +134,9 @@ pick_physical_device :: proc(d: ^Device, instance: Instance, surface: Surface) -
 		return Device_Init_Error.No_Suitable_Device
 	}
 
-	d.physical = physical_device
-	d.properties = device_properties
-	d.graphics_queue_family = graphics_queue_family
+	device.physical = physical_device
+	device.properties = device_properties
+	device.graphics_queue_family = graphics_queue_family
 
 	log.infof(
 		"Selected %vdevice '%v', Vulkan API version %v.%v.%v",
@@ -336,11 +340,11 @@ check_device_features :: proc(device: vk.PhysicalDevice, name: string, api_versi
 }
 
 @(private = "file")
-create_device_and_queues :: proc(d: ^Device) -> Device_Error {
+create_device_and_queues :: proc(device: ^Device) -> Device_Error {
 	queue_create_infos := []vk.DeviceQueueCreateInfo {
 		{
 			sType = .DEVICE_QUEUE_CREATE_INFO,
-			queueFamilyIndex = d.graphics_queue_family,
+			queueFamilyIndex = device.graphics_queue_family,
 			queueCount = 1,
 			pQueuePriorities = raw_data([]f32{1}),
 		},
@@ -396,7 +400,7 @@ create_device_and_queues :: proc(d: ^Device) -> Device_Error {
 	}
 
 	device_features_extra: rawptr
-	if d.properties.apiVersion >= vk.API_VERSION_1_3 {
+	if device.properties.apiVersion >= vk.API_VERSION_1_3 {
 		device_features_extra = rawptr(&device_features_vk13)
 	} else {
 		device_features_extra = rawptr(&sync2_features)
@@ -404,7 +408,7 @@ create_device_and_queues :: proc(d: ^Device) -> Device_Error {
 
 	device_exts := [dynamic; 8]cstring{}
 	append(&device_exts, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
-	if d.properties.apiVersion < vk.API_VERSION_1_3 {
+	if device.properties.apiVersion < vk.API_VERSION_1_3 {
 		append(&device_exts, ..REQUIRED_DEVICE_EXTS_VK12)
 	}
 
@@ -418,16 +422,16 @@ create_device_and_queues :: proc(d: ^Device) -> Device_Error {
 		pNext                   = device_features_extra,
 	}
 
-	vk.CreateDevice(d.physical, &device_info, nil, &d.logical) or_return
-	vk.load_proc_addresses_device(d.logical)
-	if d.properties.apiVersion < vk.API_VERSION_1_3 {
+	vk.CreateDevice(device.physical, &device_info, nil, &device.logical) or_return
+	vk.load_proc_addresses_device(device.logical)
+	if device.properties.apiVersion < vk.API_VERSION_1_3 {
 		vk.CmdBeginRendering = vk.CmdBeginRenderingKHR
 		vk.CmdEndRendering = vk.CmdEndRenderingKHR
 		vk.CmdPipelineBarrier2 = vk.CmdPipelineBarrier2KHR
 		vk.QueueSubmit2 = vk.QueueSubmit2KHR
 	}
 
-	vk.GetDeviceQueue(d.logical, d.graphics_queue_family, 0, &d.graphics_queue)
+	vk.GetDeviceQueue(device.logical, device.graphics_queue_family, 0, &device.graphics_queue)
 
 	return nil
 }

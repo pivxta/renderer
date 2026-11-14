@@ -141,76 +141,102 @@ make_draw_key :: proc(
 }
 
 @(require_results)
-renderer_create :: proc(window: ^Window) -> (r: ^Renderer, err: Renderer_Error) {
+renderer_create :: proc(window: ^Window) -> (renderer: ^Renderer, err: Renderer_Error) {
 	defer if err != nil {
-		renderer_destroy(r)
+		renderer_destroy(renderer)
 	}
 
-	r = new(Renderer)
+	renderer = new(Renderer)
+	if err = init_renderer(renderer, window); err != nil {
+		log.errorf("Failed to create renderer object: %v", err)
+	}
+	return renderer, nil
+}
 
-	virtual.arena_init_static(&r.arena, reserved = ARENA_CAPACITY) or_return
-	instance_init(&r.instance) or_return
-	surface_init(&r.surface, r.instance, window) or_return
-	device_init(&r.device, r.instance, r.surface) or_return
+@(private = "file")
+init_renderer :: proc(renderer: ^Renderer, window: ^Window) -> Renderer_Error {
+	virtual.arena_init_static(&renderer.arena, reserved = ARENA_CAPACITY) or_return
 
-	frame_ring_init(&r.frame_ring, r.device, SCRATCH_CAPACITY) or_return
-	upload_queue_init(&r.upload_queue, r.device, STAGING_CAPACITY) or_return
-	mipgen_queue_init(&r.mipgen_queue)
+	instance_init(&renderer.instance) or_return
+	surface_init(&renderer.surface, renderer.instance, window) or_return
+	device_init(&renderer.device, renderer.instance, renderer.surface) or_return
 
-	shaders_init(&r.shaders)
-	meshes_init(&r.meshes, r.device, MESH_POOL_CAPACITY, INDEX_POOL_CAPACITY) or_return
-	materials_init(&r.materials, r.device, MATERIAL_POOL_CAPACITY) or_return
+	frame_ring_init(&renderer.frame_ring, renderer.device, SCRATCH_CAPACITY) or_return
+	upload_queue_init(&renderer.upload_queue, renderer.device, STAGING_CAPACITY) or_return
+	mipgen_queue_init(&renderer.mipgen_queue)
+
+	materials_init(&renderer.materials, renderer.device, MATERIAL_POOL_CAPACITY) or_return
+
+	meshes_init(
+		&renderer.meshes,
+		renderer.device,
+		MESH_POOL_CAPACITY,
+		INDEX_POOL_CAPACITY,
+	) or_return
+
 	textures_init(
-		&r.textures,
-		r.device,
-		&r.mipgen_queue,
-		&r.upload_queue,
-		r.frame_ring,
+		&renderer.textures,
+		renderer.device,
+		&renderer.mipgen_queue,
+		&renderer.upload_queue,
+		renderer.frame_ring,
 		TEXTURES_CAPACITY,
 	) or_return
 
-	set_layouts := get_set_layouts(r)
+	set_layouts := get_set_layouts(renderer)
 	push_constant_ranges := get_push_constant_ranges()
-	pipelines_init(&r.pipelines, r.device, set_layouts[:], push_constant_ranges[:]) or_return
-	passes_init(&r.passes, &r.shaders, &r.pipelines, &r.materials)
+	pipelines_init(
+		&renderer.pipelines,
+		renderer.device,
+		set_layouts[:],
+		push_constant_ranges[:],
+	) or_return
 
+	shaders_init(&renderer.shaders)
+	passes_init(&renderer.passes, &renderer.shaders, &renderer.pipelines, &renderer.materials)
+
+	return setup_renderer(renderer)
+}
+
+@(private = "file")
+setup_renderer :: proc(renderer: ^Renderer) -> Renderer_Error {
 	MODULE_SPIRV :: #load("shaders/compiled/forward.spv", []u32)
-	shaders_load_module(&r.shaders, r.device, "Forward", MODULE_SPIRV) or_return
+	shaders_load_module(&renderer.shaders, renderer.device, "Forward", MODULE_SPIRV) or_return
 	renderer_register_material_type(
-		r,
+		renderer,
 		Lambert_Material,
 		Lambert_Material_Data,
 		name = "LambertMaterial",
 		resolve = resolve_lambert,
 	)
 	renderer_register_material_type(
-		r,
+		renderer,
 		Unlit_Material,
 		Unlit_Material_Data,
 		name = "UnlitMaterial",
 		resolve = resolve_unlit,
 	)
 
-	surface_configure(&r.surface, r.device) or_return
-	create_depth_texture(r) or_return
+	surface_configure(&renderer.surface, renderer.device) or_return
+	create_depth_texture(renderer) or_return
 
-	r.forward_target = pipelines_add_target(
-		&r.pipelines,
-		{color = {r.surface.format}, depth = .D32_SFLOAT, samples = ._1},
+	renderer.forward_target = pipelines_add_target(
+		&renderer.pipelines,
+		{color = {renderer.surface.format}, depth = .D32_SFLOAT, samples = ._1},
 	)
 
-	r.forward_pass = passes_add_kind(
-		&r.passes,
-		r.device,
+	renderer.forward_pass = passes_add_kind(
+		&renderer.passes,
+		renderer.device,
 		{
 			name = "Forward",
-			target = r.forward_target,
+			target = renderer.forward_target,
 			base_state = {depth_test = .Closer_Or_Equal, depth_write = true},
 			select = forward_select,
 		},
 	)
 
-	return r, nil
+	return nil
 }
 
 @(private = "file")
@@ -260,148 +286,193 @@ renderer_destroy :: proc(r: ^Renderer) {
 }
 
 @(require_results)
-renderer_reserve_mesh :: proc(r: ^Renderer) -> Mesh_Handle {
-	assert(r != nil)
-	return meshes_reserve(&r.meshes)
+renderer_reserve_mesh :: proc(renderer: ^Renderer) -> Mesh_Handle {
+	assert(renderer != nil)
+	return meshes_reserve(&renderer.meshes)
 }
 
 @(require_results)
-renderer_add_mesh :: proc(r: ^Renderer, mesh: Mesh) -> (Mesh_Handle, Mesh_Error) {
-	assert(r != nil)
-	return meshes_add(&r.meshes, &r.upload_queue, r.frame_ring, mesh)
+renderer_add_mesh :: proc(
+	renderer: ^Renderer,
+	mesh: Mesh,
+	location := #caller_location,
+) -> (
+	Mesh_Handle,
+	Mesh_Error,
+) {
+	assert(renderer != nil)
+	mesh, err := meshes_add(&renderer.meshes, &renderer.upload_queue, renderer.frame_ring, mesh)
+	if err != nil {
+		log.errorf("Failed to add/create mesh: %v", err, location = location)
+		return {}, err
+	}
+	return mesh, nil
 }
 
-renderer_replace_mesh :: proc(r: ^Renderer, handle: Mesh_Handle, mesh: Mesh) -> Mesh_Error {
-	assert(r != nil)
-	return meshes_replace(&r.meshes, &r.upload_queue, r.frame_ring, handle, mesh)
+renderer_replace_mesh :: proc(
+	renderer: ^Renderer,
+	handle: Mesh_Handle,
+	mesh: Mesh,
+	location := #caller_location,
+) -> Mesh_Error {
+	assert(renderer != nil)
+	if err := meshes_replace(
+		&renderer.meshes,
+		&renderer.upload_queue,
+		renderer.frame_ring,
+		handle,
+		mesh,
+	); err != nil {
+		log.errorf("Failed to replace mesh: %v", err, location = location)
+		return err
+	}
+	return nil
 }
 
-renderer_destroy_mesh :: proc(r: ^Renderer, handle: Mesh_Handle) {
-	assert(r != nil)
-	meshes_remove(&r.meshes, r.frame_ring, handle)
+renderer_destroy_mesh :: proc(renderer: ^Renderer, handle: Mesh_Handle) {
+	assert(renderer != nil)
+	meshes_remove(&renderer.meshes, renderer.frame_ring, handle)
 }
 
 @(require_results)
 renderer_reserve_texture :: proc(
-	r: ^Renderer,
+	renderer: ^Renderer,
 	fallback := Texture_Fallback.Color_Default,
 ) -> Texture_Handle {
-	assert(r != nil)
-	return textures_reserve(&r.textures, fallback)
+	assert(renderer != nil)
+	return textures_reserve(&renderer.textures, fallback)
 }
 
 // This function returns a valid handle even when there is an error
 @(require_results)
 renderer_add_texture :: proc(
-	r: ^Renderer,
+	renderer: ^Renderer,
 	image: Image,
 	options := Texture_Options{},
 	fallback := Texture_Fallback.Color_Error,
+	location := #caller_location,
 ) -> (
 	Texture_Handle,
 	Texture_Error,
 ) {
-	assert(r != nil)
-	return textures_add(
-		&r.textures,
-		r.device,
-		&r.mipgen_queue,
-		&r.upload_queue,
-		r.frame_ring,
+	assert(renderer != nil)
+	texture, err := textures_add(
+		&renderer.textures,
+		renderer.device,
+		renderer.frame_ring,
+		&renderer.mipgen_queue,
+		&renderer.upload_queue,
 		image,
 		options,
 		fallback,
 	)
+	if err != nil {
+		log.errorf("Failed to add texture: %v", err, location = location)
+		return texture, err
+	}
+	return texture, nil
 }
 
 renderer_replace_texture :: proc(
-	r: ^Renderer,
+	renderer: ^Renderer,
 	handle: Texture_Handle,
 	image: Image,
 	options := Texture_Options{},
+	location := #caller_location,
 ) -> Texture_Error {
-	assert(r != nil)
-	return textures_replace(
-		&r.textures,
-		r.device,
-		&r.mipgen_queue,
-		&r.upload_queue,
-		r.frame_ring,
+	assert(renderer != nil)
+	if err := textures_replace(
+		&renderer.textures,
+		renderer.device,
+		renderer.frame_ring,
+		&renderer.mipgen_queue,
+		&renderer.upload_queue,
 		handle,
 		image,
 		options,
-	)
+	); err != nil {
+		log.errorf("Failed to replace texture: %v", err, location = location)
+		return err
+	}
+	return nil
 }
 
-renderer_destroy_texture :: proc(r: ^Renderer, handle: Texture_Handle) {
-	assert(r != nil)
-	textures_remove(&r.textures, r.frame_ring, handle)
+renderer_destroy_texture :: proc(renderer: ^Renderer, handle: Texture_Handle) {
+	assert(renderer != nil)
+	textures_remove(&renderer.textures, renderer.frame_ring, handle)
 }
 
-renderer_set_texture_sampler_options :: proc(r: ^Renderer, options: Texture_Sampler_Options) {
-	assert(r != nil)
-	textures_set_sampler_options(&r.textures, options)
+renderer_set_texture_sampler_options :: proc(
+	renderer: ^Renderer,
+	options: Texture_Sampler_Options,
+) {
+	assert(renderer != nil)
+	textures_set_sampler_options(&renderer.textures, options)
 }
 
 renderer_add_material :: proc(
-	r: ^Renderer,
+	renderer: ^Renderer,
 	params: $P,
 	props := Material_Properties{},
+	location := #caller_location,
 ) -> (
-	handle: Material_Handle,
-	err: Material_Error,
+	Material_Handle,
+	Material_Error,
 ) {
-	assert(r != nil)
-	handle = materials_add(&r.materials, params, props) or_return
-	new_variants := materials_take_new_variants(&r.materials)
-	for variant in new_variants {
-		passes_add_variant(&r.passes, r.device, variant)
+	assert(renderer != nil)
+	handle, err := materials_add(&renderer.materials, params, props)
+	if err != nil {
+		log.errorf("Failed to add material: %v", err, location = location)
+		return {}, err
 	}
-	delete(new_variants)
 	return handle, nil
 }
 
 renderer_replace_material :: proc(
-	r: ^Renderer,
+	renderer: ^Renderer,
 	handle: Material_Handle,
 	params: $P,
 	props := Material_Properties{},
 ) -> Material_Error {
-	assert(r != nil)
-	materials_replace(&r.materials, r.frame_ring, handle, params, props) or_return
-	new_variants := materials_take_new_variants(&r.materials)
-	for variant in new_variants {
-		passes_add_variant(&r.passes, r.device, variant)
+	assert(renderer != nil)
+	if handle, err := materials_replace(
+		&renderer.materials,
+		renderer.frame_ring,
+		handle,
+		params,
+		props,
+	); err != nil {
+		log.errorf("Failed to replace material: %v", err, location = location)
+		return err
 	}
-	delete(new_variants)
 	return nil
 }
 
-renderer_destroy_material :: proc(r: ^Renderer, handle: Material_Handle) {
-	assert(r != nil)
-	materials_remove(&r.materials, r.frame_ring, handle)
+renderer_destroy_material :: proc(renderer: ^Renderer, handle: Material_Handle) {
+	assert(renderer != nil)
+	materials_remove(&renderer.materials, renderer.frame_ring, handle)
 }
 
 renderer_get_material :: proc(
-	r: ^Renderer,
+	renderer: ^Renderer,
 	handle: Material_Handle,
-	$P: typeid,
+	$Params: typeid,
 ) -> (
-	P,
+	Params,
 	Material_Error,
 ) {
 	assert(r != nil)
-	return materials_get(&r.materials, handle, P)
+	return materials_get(&renderer.materials, handle, Params)
 }
 
 renderer_register_material_type :: proc(
-	r: ^Renderer,
-	$P, $D: typeid,
+	renderer: ^Renderer,
+	$Params, $Data: typeid,
 	name: string,
-	resolve: proc(_: ^Textures, _: P) -> D,
+	resolve: proc(_: ^Textures, _: Params) -> Data,
 ) -> Material_Type_Id {
-	assert(r != nil)
-	return materials_register_type(&r.materials, P, D, name, resolve)
+	assert(renderer != nil)
+	return materials_register_type(&renderer.materials, Params, Data, name, resolve)
 }
 
 @(private = "file")
@@ -428,24 +499,34 @@ forward_select :: proc(
 }
 
 @(require_results)
-renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
-	free_all(virtual.arena_allocator(&r.arena))
-	context.temp_allocator = virtual.arena_allocator(&r.arena)
+renderer_draw :: proc(renderer: ^Renderer, scene: Scene) -> Renderer_Error {
+	free_all(virtual.arena_allocator(&renderer.arena))
+	context.temp_allocator = virtual.arena_allocator(&renderer.arena)
+	textures_reconfigure_dirty_samplers(&renderer.textures, renderer.device) or_return
 
-	textures_reconfigure_dirty_samplers(&r.textures, r.device) or_return
-	updates := textures_take_updates(&r.textures, context.temp_allocator)
-	materials_mark_dirty(&r.materials, updates[:])
-	materials_update_dirty(&r.materials, &r.textures, r.device, r.frame_ring)
+	new_variants := materials_take_new_variants(&renderer.materials)
+	for variant in new_variants {
+		passes_add_variant(&renderer.passes, renderer.device, variant)
+	}
 
-	frame_context := frame_begin(&r.frame_ring, r.device) or_return
-	frame_data, ok := write_frame_data(r, frame_context, scene)
+	updates := textures_take_updates(&renderer.textures)
+	materials_mark_dirty(&renderer.materials, updates[:])
+	materials_update_dirty(
+		&renderer.materials,
+		&renderer.textures,
+		renderer.device,
+		renderer.frame_ring,
+	)
+
+	frame_context := frame_begin(&renderer.frame_ring, renderer.device) or_return
+	frame_data, ok := write_frame_data(renderer, frame_context, scene)
 	if !ok {
 		return Renderer_Draw_Error.Out_Of_Scratch_Memory
 	}
 
 	surface_texture, acquire_result := surface_acquire_texture(
-		r.surface,
-		r.device,
+		renderer.surface,
+		renderer.device,
 		frame_context.image_available,
 	)
 
@@ -455,7 +536,7 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 	case .SUBOPTIMAL_KHR:
 		needs_reconfigure = true
 	case .ERROR_OUT_OF_DATE_KHR:
-		reconfigure_targets(r) or_return
+		reconfigure_targets(renderer) or_return
 		return nil
 	case .TIMEOUT, .NOT_READY:
 		return nil
@@ -464,18 +545,30 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 		return Renderer_Draw_Error.Texture_Acquisition_Failed
 	}
 
-	upload_queue_record_commands(&r.upload_queue, frame_context.command_buffer)
-	mipgen_queue_record_commands(&r.mipgen_queue, frame_context.command_buffer)
-	record_commands(r, frame_context.command_buffer, frame_data, surface_texture)
+	upload_queue_record_commands(&renderer.upload_queue, frame_context.command_buffer)
+	mipgen_queue_record_commands(&renderer.mipgen_queue, frame_context.command_buffer)
+	record_commands(renderer, frame_context.command_buffer, frame_data, surface_texture)
 
-	textures_destroy_pending(&r.textures, r.device, frame_context.finished_timeline_value)
-	materials_destroy_pending(&r.materials, frame_context.finished_timeline_value)
-	meshes_destroy_pending(&r.meshes, frame_context.finished_timeline_value)
-	upload_queue_retire(&r.upload_queue, frame_context.finished_timeline_value)
-	upload_queue_flush(&r.upload_queue, r.device) or_return
-	frame_submit(&r.frame_ring, r.device, frame_context, surface_texture.presentable) or_return
+	materials_destroy_pending(&renderer.materials, frame_context.finished_timeline_value)
+	meshes_destroy_pending(&renderer.meshes, frame_context.finished_timeline_value)
+	textures_destroy_pending(
+		&renderer.textures,
+		renderer.device,
+		frame_context.finished_timeline_value,
+	)
 
-	#partial switch result := surface_present(r.surface, r.device, surface_texture); result {
+	upload_queue_retire(&renderer.upload_queue, frame_context.finished_timeline_value)
+	upload_queue_flush(&renderer.upload_queue, renderer.device) or_return
+
+	frame_submit(
+		&renderer.frame_ring,
+		renderer.device,
+		frame_context,
+		surface_texture.presentable,
+	) or_return
+
+	result := surface_present(renderer.surface, renderer.device, surface_texture)
+	#partial switch result {
 	case .SUCCESS:
 	case .SUBOPTIMAL_KHR, .ERROR_OUT_OF_DATE_KHR:
 		needs_reconfigure = true
@@ -484,8 +577,8 @@ renderer_draw :: proc(r: ^Renderer, scene: Scene) -> Renderer_Error {
 		return Renderer_Draw_Error.Presentation_Failed
 	}
 
-	if needs_reconfigure || surface_should_resize(r.surface) {
-		reconfigure_targets(r) or_return
+	if needs_reconfigure || surface_should_resize(renderer.surface) {
+		reconfigure_targets(renderer) or_return
 	}
 
 	return nil
@@ -505,7 +598,7 @@ reconfigure_targets :: proc(r: ^Renderer) -> Renderer_Error {
 			r.frame_ring,
 			r.shaders,
 			r.forward_target,
-			Attachment_Formats{color = {r.surface.format}, depth = .D32_SFLOAT, samples = ._1},
+			{color = {r.surface.format}, depth = .D32_SFLOAT, samples = ._1},
 		) or_return
 	}
 
