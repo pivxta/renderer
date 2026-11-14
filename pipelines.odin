@@ -1,10 +1,10 @@
 package main
-import "core:os"
+import "core:container/queue"
 import "core:fmt"
 import "core:log"
-import "core:strings"
+import "core:os"
 import "core:path/filepath"
-import "core:container/queue"
+import "core:strings"
 import vk "vendor:vulkan"
 
 Graphics_Pipeline_Id :: distinct u32
@@ -115,10 +115,7 @@ pipelines_init :: proc(
 }
 
 @(private = "file")
-load_pipeline_cache_data :: proc(
-	device: Device, 
-	allocator := context.temp_allocator,
-) -> []byte {
+load_pipeline_cache_data :: proc(device: Device, allocator := context.temp_allocator) -> []byte {
 	cache_path, path_ok := get_pipeline_cache_path(device, context.temp_allocator)
 	if !path_ok {
 		log.infof("Failed to find pipeline cache path")
@@ -143,11 +140,11 @@ load_pipeline_cache_data :: proc(
 @(private = "file")
 is_cache_valid :: proc(device: Device, data: []byte) -> bool {
 	Pipeline_Cache_Header :: struct #packed {
-		size:           u32,
-		version:        u32,
-		vendor_id:      u32,
-		device_id:      u32,
-		cache_uuid:     [vk.UUID_SIZE]u8,
+		size:       u32,
+		version:    u32,
+		vendor_id:  u32,
+		device_id:  u32,
+		cache_uuid: [vk.UUID_SIZE]u8,
 	}
 
 	if len(data) < size_of(Pipeline_Cache_Header) {
@@ -155,14 +152,19 @@ is_cache_valid :: proc(device: Device, data: []byte) -> bool {
 	}
 
 	header := (^Pipeline_Cache_Header)(raw_data(data))^
-	return header.version == u32(vk.PipelineCacheHeaderVersion.ONE) &&
-	       header.vendor_id == device.properties.vendorID &&
-		   header.device_id == device.properties.deviceID &&
-		   header.cache_uuid == device.properties.pipelineCacheUUID
+	return(
+		header.version == u32(vk.PipelineCacheHeaderVersion.ONE) &&
+		header.vendor_id == device.properties.vendorID &&
+		header.device_id == device.properties.deviceID &&
+		header.cache_uuid == device.properties.pipelineCacheUUID \
+	)
 }
 
 pipelines_destroy :: proc(pipelines: ^Pipelines, device: Device) {
-	store_pipeline_cache_data(device, pipelines.cache)
+	if pipelines.cache != 0 {
+		store_pipeline_cache_data(device, pipelines.cache)
+	}
+
 	pipelines_destroy_pending(pipelines, device, max(u64))
 
 	for entry in pipelines.graphics {
@@ -225,8 +227,8 @@ write_file_atomic :: proc(path: string, data: []byte) -> (err: os.Error) {
 
 	closed, committed := false, false
 	defer {
-		if !closed    { os.close(file) }
-		if !committed { os.remove(filename) }
+		if !closed {os.close(file)}
+		if !committed {os.remove(filename)}
 	}
 
 	_ = os.write(file, data) or_return
@@ -242,21 +244,32 @@ write_file_atomic :: proc(path: string, data: []byte) -> (err: os.Error) {
 
 @(private = "file")
 get_pipeline_cache_path :: proc(
-	device: Device, 
+	device: Device,
 	allocator := context.temp_allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	cache_dir, dir_err := os.user_cache_dir(context.temp_allocator)
 	if dir_err != nil {
 		return {}, false
 	}
 
-	cache_path := fmt.aprintf(
-		"%s/basalt/pipeline/%04x_%04x", 
-		cache_dir,
+	cache_filename := fmt.tprintf(
+		"%04x_%04x",
 		device.properties.vendorID,
 		device.properties.deviceID,
-		allocator = allocator,
 	)
+
+	cache_path, alloc_err := filepath.join(
+		{cache_dir, "basalt", "pipelines", cache_filename},
+		allocator,
+	)
+
+	if alloc_err != nil {
+		return {}, false
+	}
+
 	return cache_path, true
 }
 
