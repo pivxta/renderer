@@ -25,43 +25,48 @@ Material_Error :: enum {
 	Type_Does_Not_Match,
 }
 
-alpha_mode_is_blended :: proc(alpha_mode: Alpha_Mode) -> bool { 
-	return alpha_mode >= .Alpha 
+alpha_mode_is_blended :: proc(alpha_mode: Alpha_Mode) -> bool {
+	return alpha_mode >= .Alpha
 }
 
-alpha_mode_is_masked  :: proc(alpha_mode: Alpha_Mode) -> bool { 
-	return alpha_mode == .Masked 
+alpha_mode_is_masked :: proc(alpha_mode: Alpha_Mode) -> bool {
+	return alpha_mode == .Masked
 }
 
 alpha_mode_to_blend_mode :: proc(alpha_mode: Alpha_Mode) -> Blend_Mode {
 	switch alpha_mode {
-	case .Opaque, .Masked: return .Opaque
-	case .Alpha:           return .Alpha
-	case .Premultiplied:   return .Premultiplied
-	case .Additive:        return .Additive
-	case .Multiply:        return .Multiply
+	case .Opaque, .Masked:
+		return .Opaque
+	case .Alpha:
+		return .Alpha
+	case .Premultiplied:
+		return .Premultiplied
+	case .Additive:
+		return .Additive
+	case .Multiply:
+		return .Multiply
 	}
 	return .Opaque
 }
 
 Unlit_Material :: struct {
-	color_factor: Maybe([3]f32),
+	color_factor:  Maybe([3]f32),
 	color_texture: Maybe(Texture_Handle),
-	sampler: Texture_Sampler,
+	sampler:       Texture_Sampler,
 }
 
 Unlit_Material_Data :: struct {
-	color_factor: [3]f32,
+	color_factor:  [3]f32,
 	color_texture: Texture_Index,
-	sampler: Texture_Sampler,
-	flags: Unlit_Material_Flags,
+	sampler:       Texture_Sampler,
+	flags:         Unlit_Material_Flags,
 }
 
 Unlit_Material_Flag :: enum {
 	Has_Base_Color_Texture,
 }
 
-Unlit_Material_Flags :: bit_set[Unlit_Material_Flag; u32]
+Unlit_Material_Flags :: bit_set[Unlit_Material_Flag;u32]
 
 resolve_unlit :: proc(textures: ^Textures, params: Unlit_Material) -> Unlit_Material_Data {
 	flags := Unlit_Material_Flags{}
@@ -82,20 +87,20 @@ resolve_unlit :: proc(textures: ^Textures, params: Unlit_Material) -> Unlit_Mate
 }
 
 Lambert_Material :: struct {
-	base_color_factor: Maybe([4]f32),
+	base_color_factor:  Maybe([4]f32),
 	base_color_texture: Maybe(Texture_Handle),
-	normal_factor: Maybe(f32),
-	normal_map: Maybe(Texture_Handle),
-	sampler: Texture_Sampler,
+	normal_factor:      Maybe(f32),
+	normal_map:         Maybe(Texture_Handle),
+	sampler:            Texture_Sampler,
 }
 
 Lambert_Material_Data :: struct {
-	base_color_factor: [4]f32,
-	normal_factor: f32,
+	base_color_factor:  [4]f32,
+	normal_factor:      f32,
 	base_color_texture: Texture_Index,
-	normal_map: Texture_Index,
-	sampler: Texture_Sampler,
-	flags: Lambert_Material_Flags,
+	normal_map:         Texture_Index,
+	sampler:            Texture_Sampler,
+	flags:              Lambert_Material_Flags,
 }
 
 Lambert_Material_Flag :: enum {
@@ -103,7 +108,7 @@ Lambert_Material_Flag :: enum {
 	Has_Normal_Map,
 }
 
-Lambert_Material_Flags :: bit_set[Lambert_Material_Flag; u32]
+Lambert_Material_Flags :: bit_set[Lambert_Material_Flag;u32]
 
 resolve_lambert :: proc(textures: ^Textures, params: Lambert_Material) -> Lambert_Material_Data {
 	flags := Lambert_Material_Flags{}
@@ -131,4 +136,3 @@ resolve_lambert :: proc(textures: ^Textures, params: Lambert_Material) -> Lamber
 		flags = flags,
 	}
 }
-

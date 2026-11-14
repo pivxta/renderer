@@ -1,14 +1,17 @@
 package main
 import "core:math/linalg"
 
-AFFINE_IDENTITY :: Affine_Transform{scale = 1, rotation = 1} // rotation = 1 is the identity quaternion (w = 1)
-AXIS_RIGHT   :: [3]f32{1, 0, 0}
-AXIS_UP      :: [3]f32{0, 1, 0}
+AFFINE_IDENTITY :: Affine_Transform {
+	scale    = 1,
+	rotation = 1,
+} // rotation = 1 is the identity quaternion (w = 1)
+AXIS_RIGHT :: [3]f32{1, 0, 0}
+AXIS_UP :: [3]f32{0, 1, 0}
 AXIS_FORWARD :: [3]f32{0, 0, 1}
 
 Affine_Transform :: struct {
-	scale: f32,
-	rotation: quaternion128,
+	scale:       f32,
+	rotation:    quaternion128,
 	translation: [3]f32,
 }
 
@@ -50,17 +53,18 @@ affine_make :: proc(
 
 affine_look_at :: proc(eye, target: [3]f32, up := [3]f32{0, 1, 0}) -> Affine_Transform {
 	return {
-		scale       = 1,
-		rotation    = conj(linalg.quaternion_look_at(eye, target, up)),
+		scale = 1,
+		rotation = conj(linalg.quaternion_look_at(eye, target, up)),
 		translation = eye,
 	}
 }
 
 affine_mul :: proc(a, b: Affine_Transform) -> Affine_Transform {
 	return {
-		scale       = a.scale * b.scale,
-		rotation    = a.rotation * b.rotation,
-		translation = a.translation + a.scale * linalg.quaternion_mul_vector3(a.rotation, b.translation),
+		scale = a.scale * b.scale,
+		rotation = a.rotation * b.rotation,
+		translation = a.translation +
+		a.scale * linalg.quaternion_mul_vector3(a.rotation, b.translation),
 	}
 }
 
@@ -68,8 +72,8 @@ affine_inverse :: proc(t: Affine_Transform) -> Affine_Transform {
 	inv_scale := 1 / t.scale
 	inv_rotation := conj(t.rotation)
 	return {
-		scale       = inv_scale,
-		rotation    = inv_rotation,
+		scale = inv_scale,
+		rotation = inv_rotation,
 		translation = -inv_scale * linalg.quaternion_mul_vector3(inv_rotation, t.translation),
 	}
 }
@@ -86,8 +90,8 @@ affine_to_matrix3x4 :: proc(t: Affine_Transform) -> matrix[3, 4]f32 {
 	full := affine_to_matrix(t)
 
 	m: matrix[3, 4]f32
-	for row in 0..<3 {
-		for col in 0..<4 {
+	for row in 0 ..< 3 {
+		for col in 0 ..< 4 {
 			m[row, col] = full[row, col]
 		}
 	}
@@ -105,8 +109,8 @@ affine_to_view_matrix :: proc(camera: Affine_Transform) -> matrix[4, 4]f32 {
 
 affine_lerp :: proc(a, b: Affine_Transform, t: f32) -> Affine_Transform {
 	return {
-		scale       = a.scale + (b.scale - a.scale) * t,
-		rotation    = linalg.quaternion_slerp(a.rotation, b.rotation, t),
+		scale = a.scale + (b.scale - a.scale) * t,
+		rotation = linalg.quaternion_slerp(a.rotation, b.rotation, t),
 		translation = a.translation + (b.translation - a.translation) * t,
 	}
 }

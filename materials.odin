@@ -1,11 +1,11 @@
 package main
 import "base:runtime"
-import "core:reflect"
-import "core:log"
-import "core:container/queue"
 import "core:container/handle_map"
-@(require) import "core:slice"
+import "core:container/queue"
+import "core:log"
 @(require) import "core:mem"
+import "core:reflect"
+@(require) import "core:slice"
 @(require) import "core:strings"
 
 Materials :: struct {
@@ -43,7 +43,7 @@ Materials_Create_Error :: union #shared_nil {
 
 Material_Type_Id :: distinct u32
 
-@(private="file")
+@(private = "file")
 Material_Type :: struct {
 	name:         string,
 	params_type:  typeid,
@@ -53,40 +53,35 @@ Material_Type :: struct {
 	resolve:      Resolve_Trampoline,
 }
 
-@(private="file")
-Resolve_Trampoline :: #type proc(
-	textures: ^Textures,
-	out: []byte,
-	params: rawptr,
-	resolve: rawptr,
-)
+@(private = "file")
+Resolve_Trampoline :: #type proc(textures: ^Textures, out: []byte, params: rawptr, resolve: rawptr)
 
-@(private="file")
+@(private = "file")
 Texture_Dependents :: struct {
 	generation: u32,
 	dependents: [dynamic]Texture_Dependent,
 }
 
-@(private="file")
+@(private = "file")
 Texture_Dependent :: struct {
 	material: Material_Handle,
 	index:    int,
 }
 
-@(private="file")
+@(private = "file")
 Material_Dependency :: struct {
 	texture: Texture_Handle,
 	index:   int,
 }
 
-@(private="file")
+@(private = "file")
 Material_Dirty_Level :: enum {
 	None,
 	Textures,
 	Params,
 }
 
-@(private="file")
+@(private = "file")
 Material_Slot :: struct {
 	handle:       Material_Handle,
 	type:         Material_Type_Id,
@@ -99,7 +94,7 @@ Material_Slot :: struct {
 	fresh:        bool,
 }
 
-@(private="file")
+@(private = "file")
 Pending_Free :: struct {
 	retire_value: u64,
 	data:         Pool_Subbuffer(byte),
@@ -107,15 +102,16 @@ Pending_Free :: struct {
 
 @(require_results)
 materials_init :: proc(
-	materials: ^Materials, 
-	device: Device, 
+	materials: ^Materials,
+	device: Device,
 	capacity: int,
 	allocator := context.allocator,
-) -> (err: Materials_Create_Error) {
-	assert(materials != nil)
-	
+) -> (
+	err: Materials_Create_Error,
+) {
 	pool_init(
-		&materials.pool, device,
+		&materials.pool,
+		device,
 		capacity = capacity,
 		buffer_usage = {.STORAGE_BUFFER, .SHADER_DEVICE_ADDRESS},
 		memory_usage = .AUTO_PREFER_DEVICE,
@@ -142,10 +138,6 @@ materials_init :: proc(
 }
 
 materials_destroy :: proc(materials: ^Materials, device: Device) {
-	if materials == nil {
-		return
-	}
-
 	for type in materials.types {
 		delete(type.name, materials.allocator)
 	}
@@ -153,7 +145,7 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 	for dependents in materials.dependents {
 		delete(dependents.dependents)
 	}
-	
+
 	iterator := handle_map.iterator_make(&materials.handle_map)
 	for slot, _ in handle_map.iterate(&iterator) {
 		delete(slot.dependencies)
@@ -174,47 +166,49 @@ materials_destroy :: proc(materials: ^Materials, device: Device) {
 }
 
 materials_add :: proc(
-	materials: ^Materials, 
+	materials: ^Materials,
 	params: $P,
-	props := Material_Properties {},
-) -> (handle: Material_Handle, err: Material_Error) {
-	assert(materials != nil)
-
+	props := Material_Properties{},
+) -> (
+	handle: Material_Handle,
+	err: Material_Error,
+) {
 	type, type_id := get_params_material_type(materials, P) or_return
 	data, ok := pool_make(&materials.pool, []byte, type.data_size, type.data_align)
 	if !ok {
 		return {}, .Out_Of_Gpu_Memory
 	}
 
-	handle = handle_map.add(&materials.handle_map, {
-		dirty = .Params,
-		fresh = true,
-		props = props,
-		data = data,
-		type = type_id,
-		variant = add_variant(materials, type_id, props),
-		params = make_params(params, materials.allocator),
-		dependencies = make([dynamic]Material_Dependency, materials.allocator),
-	})
+	handle = handle_map.add(
+		&materials.handle_map,
+		{
+			dirty = .Params,
+			fresh = true,
+			props = props,
+			data = data,
+			type = type_id,
+			variant = add_variant(materials, type_id, props),
+			params = make_params(params, materials.allocator),
+			dependencies = make([dynamic]Material_Dependency, materials.allocator),
+		},
+	)
 
 	append(&materials.dirty, handle)
 	return handle, nil
 }
 
 materials_replace :: proc(
-	materials: ^Materials, 
+	materials: ^Materials,
 	frame_ring: Frame_Ring,
-	handle: Material_Handle, 
+	handle: Material_Handle,
 	params: $P,
-	props := Material_Properties {},
+	props := Material_Properties{},
 ) -> Material_Error {
-	assert(materials != nil)
-	
 	slot, slot_ok := handle_map.get(&materials.handle_map, handle)
 	if !slot_ok {
 		return .Invalid_Handle
 	}
-	
+
 	type, type_id := get_params_material_type(materials, P) or_return
 	new_data, new_data_ok := pool_make(&materials.pool, []byte, type.data_size, type.data_align)
 	if !new_data_ok {
@@ -233,10 +227,10 @@ materials_replace :: proc(
 	return nil
 }
 
-@(private="file")
+@(private = "file")
 add_variant :: proc(
-	materials: ^Materials, 
-	type: Material_Type_Id, 
+	materials: ^Materials,
+	type: Material_Type_Id,
 	props: Material_Properties,
 ) -> Material_Variant_Id {
 	if variant_id, exists := materials.variants_by_key[{type, props}]; exists {
@@ -244,18 +238,22 @@ add_variant :: proc(
 	}
 
 	variant_id := Material_Variant_Id(len(materials.variants))
-	variant := Material_Variant_Key {type, props}
+	variant := Material_Variant_Key{type, props}
 	append(&materials.variants, variant)
 	append(&materials.new_variants, variant_id)
 	materials.variants_by_key[variant] = variant_id
 	return variant_id
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 get_params_material_type :: proc(
-	materials: ^Materials, 
-	$P: typeid
-) -> (^Material_Type, Material_Type_Id, Material_Error) {
+	materials: ^Materials,
+	$P: typeid,
+) -> (
+	^Material_Type,
+	Material_Type_Id,
+	Material_Error,
+) {
 	type_id, ok := materials.type_by_params[P]
 	if !ok {
 		return nil, 0, .Type_Not_Registered
@@ -264,7 +262,7 @@ get_params_material_type :: proc(
 	return &materials.types[type_id], type_id, nil
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 make_params :: proc(params: $P, allocator := context.allocator) -> []byte {
 	params_bytes := make([]byte, size_of(P), allocator)
 	params_typed := slice.reinterpret([]P, params_bytes)
@@ -273,8 +271,6 @@ make_params :: proc(params: $P, allocator := context.allocator) -> []byte {
 }
 
 materials_remove :: proc(materials: ^Materials, frame_ring: Frame_Ring, handle: Material_Handle) {
-	assert(materials != nil)
-
 	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
 		unlink_all(materials, slot)
 		delete(slot.dependencies)
@@ -284,15 +280,15 @@ materials_remove :: proc(materials: ^Materials, frame_ring: Frame_Ring, handle: 
 	}
 }
 
-@(private="file")
+@(private = "file")
 defer_free :: proc(materials: ^Materials, frame_ring: Frame_Ring, slot: ^Material_Slot) {
-	queue.enqueue(&materials.pending_frees, {
-		retire_value = frame_ring.timeline_value + 1,
-		data = slot.data,
-	})
+	queue.enqueue(
+		&materials.pending_frees,
+		{retire_value = frame_ring.timeline_value + 1, data = slot.data},
+	)
 }
 
-@(private="file")
+@(private = "file")
 mark :: proc(materials: ^Materials, slot: ^Material_Slot, level: Material_Dirty_Level) {
 	if slot.dirty == .None {
 		append(&materials.dirty, slot.handle)
@@ -300,9 +296,9 @@ mark :: proc(materials: ^Materials, slot: ^Material_Slot, level: Material_Dirty_
 	slot.dirty = max(slot.dirty, level)
 }
 
-@(private="file")
+@(private = "file")
 get_dependents :: proc(
-	materials: ^Materials, 
+	materials: ^Materials,
 	texture: Texture_Handle,
 	create: bool,
 ) -> ^[dynamic]Texture_Dependent {
@@ -325,26 +321,23 @@ get_dependents :: proc(
 	return &entry.dependents
 }
 
-@(private="file")
-link :: proc(
-	materials: ^Materials, 
-	slot: ^Material_Slot,
-	texture: Texture_Handle,
-) {
-	dependents := get_dependents(materials, texture, create=true)
+@(private = "file")
+link :: proc(materials: ^Materials, slot: ^Material_Slot, texture: Texture_Handle) {
+	dependents := get_dependents(materials, texture, create = true)
 
 	i := len(slot.dependencies)
 	j := len(dependents)
 
 	append(&slot.dependencies, {texture = texture, index = j})
-	append(dependents,         {material = slot.handle, index = i})
+	append(dependents, {material = slot.handle, index = i})
 }
 
-@(private="file")
+@(private = "file")
 unlink :: proc(materials: ^Materials, slot: ^Material_Slot, i: int) {
 	dependency := slot.dependencies[i]
 
-	if dependents := get_dependents(materials, dependency.texture, create=false); dependents != nil {
+	if dependents := get_dependents(materials, dependency.texture, create = false);
+	   dependents != nil {
 		j := dependency.index
 		last := len(dependents) - 1
 		if last != j {
@@ -363,14 +356,15 @@ unlink :: proc(materials: ^Materials, slot: ^Material_Slot, i: int) {
 		moved := slot.dependencies[last]
 		slot.dependencies[i] = moved
 
-		if dependents := get_dependents(materials, moved.texture, create=false); dependents != nil {
-			dependents[moved.index].index = i				
+		if dependents := get_dependents(materials, moved.texture, create = false);
+		   dependents != nil {
+			dependents[moved.index].index = i
 		}
 	}
 	pop(&slot.dependencies)
 }
 
-@(private="file")
+@(private = "file")
 unlink_all :: proc(materials: ^Materials, slot: ^Material_Slot) {
 	for i := len(slot.dependencies) - 1; i >= 0; i -= 1 {
 		unlink(materials, slot, i)
@@ -378,24 +372,20 @@ unlink_all :: proc(materials: ^Materials, slot: ^Material_Slot) {
 }
 
 materials_destroy_pending :: proc(materials: ^Materials, finished_value: u64) {
-	assert(materials != nil)
-	
 	for queue.len(materials.pending_frees) > 0 {
 		pending_free := queue.front_ptr(&materials.pending_frees)
 		if pending_free.retire_value <= finished_value {
 			pool_free(&materials.pool, &pending_free.data)
 			queue.dequeue(&materials.pending_frees)
 		} else {
-			break	
+			break
 		}
 	}
 }
 
 materials_mark_dirty :: proc(materials: ^Materials, updates: []Texture_Update) {
-	assert(materials != nil)
-	
 	for update in updates {
-		dependents := get_dependents(materials, update.handle, create=false)
+		dependents := get_dependents(materials, update.handle, create = false)
 		if dependents == nil {
 			continue
 		}
@@ -415,18 +405,16 @@ materials_mark_dirty :: proc(materials: ^Materials, updates: []Texture_Update) {
 				mark(materials, slot, .Textures)
 			}
 		}
-		
+
 	}
 }
 
 materials_update_dirty :: proc(
-	materials: ^Materials, 
-	textures: ^Textures, 
+	materials: ^Materials,
+	textures: ^Textures,
 	device: Device,
-	frame_ring: Frame_Ring, 
+	frame_ring: Frame_Ring,
 ) {
-	assert(materials != nil)
-
 	retry := make([dynamic]Material_Handle, context.temp_allocator)
 	deps := make([dynamic]Texture_Handle, context.temp_allocator)
 	for material in materials.dirty {
@@ -439,7 +427,12 @@ materials_update_dirty :: proc(
 
 		if slot.dirty >= .Textures {
 			if !slot.fresh {
-				new_data, new_data_ok := pool_make(&materials.pool, []u8, type.data_size, type.data_align)
+				new_data, new_data_ok := pool_make(
+					&materials.pool,
+					[]u8,
+					type.data_size,
+					type.data_align,
+				)
 				if !new_data_ok {
 					log.error("Out of GPU memory for materials")
 					append(&retry, material)
@@ -477,94 +470,97 @@ materials_update_dirty :: proc(
 	append(&materials.dirty, ..retry[:])
 }
 
-@(private="file")
+@(private = "file")
 resolve_texture_dependencies :: proc(
-	out: ^[dynamic]Texture_Handle, 
-	params: []byte, 
-	params_type: typeid
+	out: ^[dynamic]Texture_Handle,
+	params: []byte,
+	params_type: typeid,
 ) {
-	collect_textures(out, transmute(any)runtime.Raw_Any{
-		data = raw_data(params), 
-		id = params_type,
-	})	
+	collect_textures(out, transmute(any)runtime.Raw_Any{data = raw_data(params), id = params_type})
 }
 
-@(private="file")
+@(private = "file")
 collect_textures :: proc(out: ^[dynamic]Texture_Handle, value: any) {
-    if value.data == nil {
-        return
-    }
+	if value.data == nil {
+		return
+	}
 
-    if value.id == typeid_of(Texture_Handle) {
-        handle := (^Texture_Handle)(value.data)^
-        if handle != {} {
-            append(out, handle)
-        }
-        return
-    }
+	if value.id == typeid_of(Texture_Handle) {
+		handle := (^Texture_Handle)(value.data)^
+		if handle != {} {
+			append(out, handle)
+		}
+		return
+	}
 
-    #partial switch v in runtime.type_info_base(type_info_of(value.id)).variant {
-    case runtime.Type_Info_Union:
-        collect_textures(out, reflect.get_union_variant(value))
-    case runtime.Type_Info_Struct:
-        for i in 0..<reflect.struct_field_count(value.id) {
-            field := reflect.struct_field_at(value.id, i)
-            collect_textures(out, reflect.struct_field_value(value, field))
-        }
-    case runtime.Type_Info_Array, runtime.Type_Info_Enumerated_Array,
-         runtime.Type_Info_Slice, runtime.Type_Info_Dynamic_Array:
-        for i in 0..<reflect.length(value) {
-            collect_textures(out, reflect.index(value, i))
-        }
-    }
+	#partial switch v in runtime.type_info_base(type_info_of(value.id)).variant {
+	case runtime.Type_Info_Union:
+		collect_textures(out, reflect.get_union_variant(value))
+	case runtime.Type_Info_Struct:
+		for i in 0 ..< reflect.struct_field_count(value.id) {
+			field := reflect.struct_field_at(value.id, i)
+			collect_textures(out, reflect.struct_field_value(value, field))
+		}
+	case runtime.Type_Info_Array,
+	     runtime.Type_Info_Enumerated_Array,
+	     runtime.Type_Info_Slice,
+	     runtime.Type_Info_Dynamic_Array:
+		for i in 0 ..< reflect.length(value) {
+			collect_textures(out, reflect.index(value, i))
+		}
+	}
 }
 
 materials_register_type :: proc(
 	materials: ^Materials,
 	$P, $D: typeid,
 	name: string,
-	resolve: proc(^Textures, P) -> D,
+	resolve: proc(_: ^Textures, _: P) -> D,
 ) -> Material_Type_Id {
-	assert(materials != nil)
 	assert(P not_in materials.type_by_params, "Material type already registered")
 
 	id := Material_Type_Id(len(materials.types))
-	append(&materials.types, {
-		name = strings.clone(name, materials.allocator),
-		params_type = P,
-		data_size = size_of(D),
-		data_align = max(align_of(D), 16),
-		resolve_proc = rawptr(resolve),
-		resolve = make_trampoline(P, D),
-	})
+	append(
+		&materials.types,
+		{
+			name = strings.clone(name, materials.allocator),
+			params_type = P,
+			data_size = size_of(D),
+			data_align = max(align_of(D), 16),
+			resolve_proc = rawptr(resolve),
+			resolve = make_trampoline(P, D),
+		},
+	)
 
 	materials.type_by_params[P] = id
 	return id
 }
 
-@(private="file")
+@(private = "file")
 make_trampoline :: proc($P, $D: typeid) -> Resolve_Trampoline {
 	return proc(textures: ^Textures, out: []byte, params: rawptr, resolve: rawptr) {
-		typed_resolve := cast(proc(^Textures, P) -> D)resolve
-		resolved_data := typed_resolve(textures, (^P)(params)^)
-		assert(len(out) == size_of(D))
-		copy(out, mem.ptr_to_bytes(&resolved_data))
-	}
+			typed_resolve := cast(proc(_: ^Textures, _: P) -> D)resolve
+			resolved_data := typed_resolve(textures, (^P)(params)^)
+			assert(len(out) == size_of(D))
+			copy(out, mem.ptr_to_bytes(&resolved_data))
+		}
 }
 
 materials_get :: proc(
-	materials: ^Materials, 
+	materials: ^Materials,
 	handle: Material_Handle,
 	$P: typeid,
-) -> (P, Material_Error) {
-	assert(materials != nil)
+) -> (
+	P,
+	Material_Error,
+) {
 	if slot, slot_ok := handle_map.get(&materials.handle_map, handle); slot_ok {
 		type_id, type_ok := materials.type_by_params[P]
 		if !type_ok {
 			return {}, .Type_Not_Registered
 		}
 		if type_id != slot.type {
-			return {}, .Type_Does_Not_Match	
+			return {}, .Type_Does_Not_Match
 		}
 
 		typed_params := slice.reinterpret([]P, slot.params)
@@ -574,23 +570,25 @@ materials_get :: proc(
 }
 
 materials_get_info :: proc(
-	materials: ^Materials, 
+	materials: ^Materials,
 	handle: Material_Handle,
-) -> (Material_Info, bool) {
-	assert(materials != nil)
+) -> (
+	Material_Info,
+	bool,
+) {
 	if slot, ok := handle_map.get(&materials.handle_map, handle); ok {
 		return {
-			type = slot.type,
-			props = slot.props,
-			variant = slot.variant,
-			address = slot.data.address,
-		}, true
+				type = slot.type,
+				props = slot.props,
+				variant = slot.variant,
+				address = slot.data.address,
+			},
+			true
 	}
 	return {}, false
 }
 
 materials_is_valid :: proc(materials: ^Materials, handle: Material_Handle) -> bool {
-	assert(materials != nil)
 	return handle_map.is_valid(&materials.handle_map, handle)
 }
 
@@ -604,7 +602,7 @@ materials_get_variant_count :: proc(materials: Materials) -> int {
 }
 
 materials_get_variant :: proc(
-	materials: Materials, 
+	materials: Materials,
 	id: Material_Variant_Id,
 ) -> Material_Variant_Key {
 	assert(int(id) < len(materials.variants))

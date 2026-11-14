@@ -1,10 +1,10 @@
-package build 
+package build
 
-import "core:os"
-import "core:fmt"
 import "core:flags"
-import "core:strings"
+import "core:fmt"
+import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:time"
 
 SHADER_SRC :: "shaders"
@@ -24,8 +24,8 @@ Toggle :: enum {
 }
 
 Options :: struct {
-	release: bool `usage:"Optimized build (-o:speed) instead of a debug build."`,
-	validation: Toggle `usage:"Vulkan validation layer: auto (on in debug), on, off."`,
+	release:         bool `usage:"Optimized build (-o:speed) instead of a debug build."`,
+	validation:      Toggle `usage:"Vulkan validation layer: auto (on in debug), on, off."`,
 	sync_validation: Toggle `usage:"Synchronization validation: auto (on in debug), on, off."`,
 }
 
@@ -83,7 +83,7 @@ vma_is_built :: proc() -> bool {
 
 	for file in files {
 		ext := filepath.ext(file.name)
-		if (strings.has_prefix(file.name, "vma_") && ext == ".a") || 
+		if (strings.has_prefix(file.name, "vma_") && ext == ".a") ||
 		   (strings.has_prefix(file.name, "libvma_") && ext == ".a") ||
 		   (strings.has_prefix(file.name, "vma_") && ext == ".lib") {
 			return true
@@ -117,19 +117,26 @@ compile_shaders :: proc() {
 			continue
 		}
 
-		fmt.eprintfln("Compiling %s", src)	
+		fmt.eprintfln("Compiling %s", src)
 
-		run({
-			"slangc", src,
-			"-I", SHADER_SRC,
-			"-target", "spirv",
-			"-profile", "spirv_1_4",
-			"-emit-spirv-directly",
-			"-fvk-use-scalar-layout",
-			"-fvk-use-entrypoint-name",
-			"-matrix-layout-column-major",
-			"-o", dst,
-		})
+		run(
+			{
+				"slangc",
+				src,
+				"-I",
+				SHADER_SRC,
+				"-target",
+				"spirv",
+				"-profile",
+				"spirv_1_4",
+				"-emit-spirv-directly",
+				"-fvk-use-scalar-layout",
+				"-fvk-use-entrypoint-name",
+				"-matrix-layout-column-major",
+				"-o",
+				dst,
+			},
+		)
 	}
 }
 
@@ -148,7 +155,10 @@ build_program :: proc(options: Options) {
 
 	fmt.eprintfln(
 		"Building %s (%s, validation: %v, sync validation: %v)",
-		PROGRAM_NAME, mode, options.validation, options.sync_validation,
+		PROGRAM_NAME,
+		mode,
+		options.validation,
+		options.sync_validation,
 	)
 	run(args[:])
 }

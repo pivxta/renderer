@@ -3,59 +3,52 @@ import "core:container/queue"
 import "core:math/bits"
 
 Timeline_Ring_Range :: struct {
-	retire_value: u64,
+	retire_value:   u64,
 	logical_offset: u64,
-	size: u64,
+	size:           u64,
 }
 
 Timeline_Ring_Allocation :: struct {
 	offset: u64,
-	size: u64,
+	size:   u64,
 }
 
 Timeline_Ring_Block :: struct {
 	start: u64,
-	end: u64,
+	end:   u64,
 }
 
 Timeline_Ring :: struct {
-	capacity: u64,
-	committed_head: u64,
-	logical_tail: u64,
-	logical_head: u64,
-
-	current_value: u64,
-	committed_value: u64,
-	retired_value: u64,
+	capacity:         u64,
+	committed_head:   u64,
+	logical_tail:     u64,
+	logical_head:     u64,
+	current_value:    u64,
+	committed_value:  u64,
+	retired_value:    u64,
 	committed_ranges: queue.Queue(Timeline_Ring_Range),
 }
 
 tring_init :: proc(ring: ^Timeline_Ring, capacity: u64) {
-	assert(ring != nil)
-
 	COMMITTED_QUEUE_CAPACITY :: 128
-
 	ring^ = {}
 	ring.capacity = capacity
 	queue.init(&ring.committed_ranges, COMMITTED_QUEUE_CAPACITY)
 }
 
 tring_destroy :: proc(ring: ^Timeline_Ring) {
-	if ring == nil {
-		return
-	}
-
 	queue.destroy(&ring.committed_ranges)
 	ring^ = {}
 }
 
 tring_allocate :: proc(
-	ring: ^Timeline_Ring, 
-	size: u64, 
+	ring: ^Timeline_Ring,
+	size: u64,
 	alignment: u64,
-) -> (alloc: Timeline_Ring_Allocation, ok: bool) {
-	assert(ring != nil)
-
+) -> (
+	alloc: Timeline_Ring_Allocation,
+	ok: bool,
+) {
 	assert(size > 0)
 	assert(bits.is_power_of_two(alignment), "alignment must be a power of two")
 
@@ -83,12 +76,15 @@ tring_allocate :: proc(
 }
 
 tring_allocate_with :: proc(
-	ring: ^Timeline_Ring, 
+	ring: ^Timeline_Ring,
 	value: u64,
-	size: u64, 
+	size: u64,
 	alignment: u64,
-) -> (alloc: Timeline_Ring_Allocation, ok: bool) {
-	assert(value >= ring.current_value) 
+) -> (
+	alloc: Timeline_Ring_Allocation,
+	ok: bool,
+) {
+	assert(value >= ring.current_value)
 	assert(value >= ring.committed_value)
 	ring.current_value = value
 
@@ -103,7 +99,7 @@ tring_pending_blocks :: proc(ring: Timeline_Ring) -> (ranges: [dynamic; 2]Timeli
 	tail := ring.committed_head % ring.capacity
 	head := ring.logical_head % ring.capacity
 	if head > tail {
-		append(&ranges, {tail, head})	
+		append(&ranges, {tail, head})
 		return
 	}
 
@@ -113,7 +109,7 @@ tring_pending_blocks :: proc(ring: Timeline_Ring) -> (ranges: [dynamic; 2]Timeli
 }
 
 tring_begin :: proc(ring: ^Timeline_Ring, value: u64) {
-	assert(value >= ring.current_value) 
+	assert(value >= ring.current_value)
 	assert(value > ring.committed_value)
 	ring.current_value = value
 	ring.logical_head = ring.committed_head
@@ -137,17 +133,18 @@ tring_commit :: proc(ring: ^Timeline_Ring) {
 		}
 	}
 
-	queue.enqueue(&ring.committed_ranges, Timeline_Ring_Range {
-		retire_value = ring.committed_value,
-		logical_offset = ring.committed_head,
-		size = size,
-	})
+	queue.enqueue(
+		&ring.committed_ranges,
+		Timeline_Ring_Range {
+			retire_value = ring.committed_value,
+			logical_offset = ring.committed_head,
+			size = size,
+		},
+	)
 	ring.committed_head = ring.logical_head
 }
 
 tring_retire :: proc(ring: ^Timeline_Ring, value: u64) {
-	assert(value >= ring.retired_value)
-
 	ring.retired_value = value
 	for queue.len(ring.committed_ranges) > 0 {
 		range := queue.front(&ring.committed_ranges)

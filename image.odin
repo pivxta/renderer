@@ -1,17 +1,17 @@
 package main
-import "core:mem"
+import "base:runtime"
 import "core:math"
+import "core:mem"
 import "core:slice"
 import "core:strings"
-import "base:runtime"
 import stbi "vendor:stb/image"
 import vk "vendor:vulkan"
 
 Image :: struct {
-	width: int,
-	height: int,
-	bytes: []byte,
-	format: Image_Format,
+	width:     int,
+	height:    int,
+	bytes:     []byte,
+	format:    Image_Format,
 	allocator: runtime.Allocator,
 }
 
@@ -35,24 +35,34 @@ Image_Error :: union #shared_nil {
 }
 
 image_make :: proc(
-	width, height: int, 
-	format: Image_Format, 
+	width, height: int,
+	format: Image_Format,
 	allocator := context.allocator,
-) -> (image: Image, err: runtime.Allocator_Error) {
+) -> (
+	image: Image,
+	err: runtime.Allocator_Error,
+) {
 	image.format = format
 	image.width = width
 	image.height = height
 	image.allocator = allocator
-	image.bytes = make([]byte, width * height * image_format_texel_size(format), allocator) or_return
+	image.bytes = make(
+		[]byte,
+		width * height * image_format_texel_size(format),
+		allocator,
+	) or_return
 	return
 }
 
 image_load_from_file :: proc(
-	filename: string, 
+	filename: string,
 	allocator := context.allocator,
-) -> (image: Image, err: Image_Error) {
+) -> (
+	image: Image,
+	err: Image_Error,
+) {
 	cfilename := strings.clone_to_cstring(filename)
-	defer delete(cfilename) 
+	defer delete(cfilename)
 
 	width, height, components: i32
 	if stbi.info(cfilename, &width, &height, &components) == 0 {
@@ -67,17 +77,25 @@ image_load_from_file :: proc(
 	format: Image_Format
 	if is_hdr {
 		switch components {
-		case 1: format = .R_F16
-		case 2: format = .Rg_F16
-		case 4: format = .Rgba_F16
-		case: unreachable()
+		case 1:
+			format = .R_F16
+		case 2:
+			format = .Rg_F16
+		case 4:
+			format = .Rgba_F16
+		case:
+			unreachable()
 		}
 	} else {
 		switch components {
-		case 1: format = .R_U8
-		case 2: format = .Rg_U8
-		case 4: format = .Rgba_U8
-		case: unreachable()
+		case 1:
+			format = .R_U8
+		case 2:
+			format = .Rg_U8
+		case 4:
+			format = .Rgba_U8
+		case:
+			unreachable()
 		}
 	}
 
@@ -94,7 +112,7 @@ image_load_from_file :: proc(
 		}
 
 		values := slice.reinterpret([]f16, image.bytes)
-		for i in 0..<len(values) {
+		for i in 0 ..< len(values) {
 			values[i] = f16(clamp(loaded_values[i], -65504, 65504))
 		}
 
@@ -109,22 +127,17 @@ image_load_from_file :: proc(
 		mem.copy(raw_data(image.bytes), loaded_values, len(image.bytes))
 		stbi.image_free(loaded_values)
 	}
-	
+
 	return image, nil
 }
 
 image_destroy :: proc(image: ^Image) {
-	if image == nil {
-		return
-	}
-
 	delete(image.bytes, image.allocator)
 	image^ = {}
 }
 
 @(require_results)
 image_pixels :: proc($T: typeid, image: ^Image) -> []T {
-	assert(image != nil)
 	assert(size_of(T) == image_format_texel_size(image.format))
 	return slice.reinterpret([]T, image.bytes)
 }
@@ -136,19 +149,27 @@ image_get_max_mip_levels :: proc(image: Image) -> int {
 
 @(require_results)
 image_is_valid :: proc(image: Image) -> bool {
-	return image.width > 0 &&
-	       image.height > 0 &&
-	       len(image.bytes) == image.width * image.height * image_format_texel_size(image.format)
+	return(
+		image.width > 0 &&
+		image.height > 0 &&
+		len(image.bytes) == image.width * image.height * image_format_texel_size(image.format) \
+	)
 }
 
 image_format_texel_size :: proc(fmt: Image_Format) -> int {
 	switch fmt {
-	case .R_U8: return 1
-	case .Rg_U8: return 2
-	case .Rgba_U8: return 4
-	case .R_F16: return 2
-	case .Rg_F16: return 4
-	case .Rgba_F16: return 8 
+	case .R_U8:
+		return 1
+	case .Rg_U8:
+		return 2
+	case .Rgba_U8:
+		return 4
+	case .R_F16:
+		return 2
+	case .Rg_F16:
+		return 4
+	case .Rgba_F16:
+		return 8
 	}
 	unreachable()
 }
@@ -176,21 +197,33 @@ image_format_to_vk :: proc(fmt: Image_Format, colorspace: Texture_Colorspace) ->
 	switch colorspace {
 	case .Srgb:
 		switch fmt {
-		case .R_U8: return .R8_UNORM
-		case .Rg_U8: return .R8G8_UNORM 
-		case .Rgba_U8: return .R8G8B8A8_SRGB
-		case .R_F16: return .R16_SFLOAT
-		case .Rg_F16: return .R16G16_SFLOAT
-		case .Rgba_F16: return .R16G16B16A16_SFLOAT
+		case .R_U8:
+			return .R8_UNORM
+		case .Rg_U8:
+			return .R8G8_UNORM
+		case .Rgba_U8:
+			return .R8G8B8A8_SRGB
+		case .R_F16:
+			return .R16_SFLOAT
+		case .Rg_F16:
+			return .R16G16_SFLOAT
+		case .Rgba_F16:
+			return .R16G16B16A16_SFLOAT
 		}
 	case .Linear:
 		switch fmt {
-		case .R_U8: return .R8_UNORM
-		case .Rg_U8: return .R8G8_UNORM 
-		case .Rgba_U8: return .R8G8B8A8_UNORM
-		case .R_F16: return .R16_SFLOAT
-		case .Rg_F16: return .R16G16_SFLOAT
-		case .Rgba_F16: return .R16G16B16A16_SFLOAT
+		case .R_U8:
+			return .R8_UNORM
+		case .Rg_U8:
+			return .R8G8_UNORM
+		case .Rgba_U8:
+			return .R8G8B8A8_UNORM
+		case .R_F16:
+			return .R16_SFLOAT
+		case .Rg_F16:
+			return .R16G16_SFLOAT
+		case .Rgba_F16:
+			return .R16G16B16A16_SFLOAT
 		}
 	}
 	unreachable()

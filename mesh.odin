@@ -6,8 +6,8 @@ Mesh_Handle :: distinct hm.Handle64
 
 Mesh :: struct {
 	vertex_count: int,
-	attributes: Vertex_Attributes,
-	indices: Vertex_Indices,
+	attributes:   Vertex_Attributes,
+	indices:      Vertex_Indices,
 }
 
 Mesh_Error :: enum {
@@ -31,8 +31,8 @@ Mesh_Error :: enum {
 
 Vertex_Attribute_Data :: struct {
 	encoding: Vertex_Attribute_Encoding,
-	divisor: Maybe(int),
-	data: []byte,
+	divisor:  Maybe(int),
+	data:     []byte,
 }
 
 Vertex_Attribute :: enum {
@@ -55,13 +55,23 @@ Vertex_Attribute :: enum {
 }
 
 Vertex_Attribute_Encoding :: enum {
-	F32x1, F32x2, F32x3, F32x4,
-	F16x2, F16x4,
-	U32x1, U32x2, U32x3, U32x4,
-	U16x2, U16x4,
-	U8x4, 
-	Snorm16x2, Snorm16x4,
-	Unorm16x2, Unorm16x4,
+	F32x1,
+	F32x2,
+	F32x3,
+	F32x4,
+	F16x2,
+	F16x4,
+	U32x1,
+	U32x2,
+	U32x3,
+	U32x4,
+	U16x2,
+	U16x4,
+	U8x4,
+	Snorm16x2,
+	Snorm16x4,
+	Unorm16x2,
+	Unorm16x4,
 	Snorm8x4,
 	Unorm8x4,
 	Oct16,
@@ -69,13 +79,16 @@ Vertex_Attribute_Encoding :: enum {
 
 Vertex_Attributes :: [Vertex_Attribute]Maybe(Vertex_Attribute_Data)
 
-Vertex_Indices :: union #shared_nil { []u16, []u32 }
+Vertex_Indices :: union #shared_nil {
+	[]u16,
+	[]u32,
+}
 
-Vertex_Attribute_Set :: bit_set[Vertex_Attribute; u32]
+Vertex_Attribute_Set :: bit_set[Vertex_Attribute;u32]
 
-Vertex_Attribute_Encoding_Set :: bit_set[Vertex_Attribute_Encoding; u32]
+Vertex_Attribute_Encoding_Set :: bit_set[Vertex_Attribute_Encoding;u32]
 
-ALL_VERTEX_ATTRIBUTE_ENCODINGS :: ~Vertex_Attribute_Encoding_Set {} 
+ALL_VERTEX_ATTRIBUTE_ENCODINGS :: ~Vertex_Attribute_Encoding_Set{}
 
 SUPPORTED_VERTEX_ATTRIBUTE_ENCODINGS := [Vertex_Attribute]Vertex_Attribute_Encoding_Set {
 	.Position    = {.F32x3, .F16x4, .Snorm16x4, .Unorm16x4},
@@ -97,21 +110,31 @@ SUPPORTED_VERTEX_ATTRIBUTE_ENCODINGS := [Vertex_Attribute]Vertex_Attribute_Encod
 }
 
 VERTEX_ATTRIBUTE_ENCODING_SIZE := [Vertex_Attribute_Encoding]int {
-	.F32x1 = 4, .F32x2 = 8, .F32x3 = 12, .F32x4 = 16,
-	.F16x2 = 4, .F16x4 = 8,
-	.U32x1 = 4, .U32x2 = 8, .U32x3 = 12, .U32x4 = 16,
-	.U16x2 = 4, .U16x4 = 8,
-	.U8x4 = 4, 
-	.Snorm16x2 = 4, .Snorm16x4 = 8,
-	.Unorm16x2 = 4, .Unorm16x4 = 8,
-	.Snorm8x4 = 4,
-	.Unorm8x4 = 4,
-	.Oct16 = 4,
+	.F32x1     = 4,
+	.F32x2     = 8,
+	.F32x3     = 12,
+	.F32x4     = 16,
+	.F16x2     = 4,
+	.F16x4     = 8,
+	.U32x1     = 4,
+	.U32x2     = 8,
+	.U32x3     = 12,
+	.U32x4     = 16,
+	.U16x2     = 4,
+	.U16x4     = 8,
+	.U8x4      = 4,
+	.Snorm16x2 = 4,
+	.Snorm16x4 = 8,
+	.Unorm16x2 = 4,
+	.Unorm16x4 = 8,
+	.Snorm8x4  = 4,
+	.Unorm8x4  = 4,
+	.Oct16     = 4,
 }
 
 @(require_results)
 mesh_attribute_set :: proc(mesh: Mesh) -> Vertex_Attribute_Set {
-	attribute_set := Vertex_Attribute_Set {}
+	attribute_set := Vertex_Attribute_Set{}
 	for data, attribute in mesh.attributes {
 		if data != nil {
 			attribute_set |= {attribute}
@@ -179,12 +202,12 @@ mesh_validate :: proc(mesh: Mesh) -> Mesh_Error {
 	return .None
 }
 
-@(private="file")
+@(private = "file")
 check_indices :: proc(indices: []$T, vertex_count: int) -> Mesh_Error {
 	if u64(vertex_count) > u64(max(T)) + 1 {
 		return .Too_Many_Vertices_For_Index_Type
 	}
-	
+
 	if len(indices) == 0 {
 		return .Empty_Indices
 	}
@@ -197,7 +220,7 @@ check_indices :: proc(indices: []$T, vertex_count: int) -> Mesh_Error {
 		if u64(index) >= u64(vertex_count) {
 			return .Index_Out_Of_Range
 		}
-	}	
+	}
 
 	return .None
 }

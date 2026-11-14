@@ -5,7 +5,7 @@ import vk "vendor:vulkan"
 
 Upload_Queue :: struct {
 	staging: Staging_Buffer,
-	pending: queue.Queue(Upload),	
+	pending: queue.Queue(Upload),
 }
 
 Resource_Usage :: struct {
@@ -14,23 +14,23 @@ Resource_Usage :: struct {
 	layout: vk.ImageLayout,
 }
 
-@(private="file")
+@(private = "file")
 Texture_Upload :: struct {
 	texture: Texture,
-	usage: Resource_Usage,
+	usage:   Resource_Usage,
 	staging: Staging_Subbuffer(u8),
-	layer: u32,
+	layer:   u32,
 }
 
-@(private="file")
+@(private = "file")
 Buffer_Upload :: struct {
-	buffer: vk.Buffer,
-	usage: Resource_Usage,
+	buffer:  vk.Buffer,
+	usage:   Resource_Usage,
 	staging: Staging_Subbuffer(u8),
-	offset: Device_Size,
+	offset:  Device_Size,
 }
 
-@(private="file")
+@(private = "file")
 Upload :: union {
 	Buffer_Upload,
 	Texture_Upload,
@@ -44,39 +44,33 @@ SAMPLED_USAGE :: Resource_Usage {
 
 @(require_results)
 upload_queue_init :: proc(
-	u: ^Upload_Queue, 
-	device: Device, 
+	u: ^Upload_Queue,
+	device: Device,
 	staging_capacity: Device_Size,
-) -> (err: Buffer_Error) {
-	assert(u != nil)
-
+) -> (
+	err: Buffer_Error,
+) {
 	defer if err != nil {
-		upload_queue_destroy(u, device)	
+		upload_queue_destroy(u, device)
 	}
-	
+
 	staging_init(&u.staging, device, staging_capacity) or_return
 	queue.init(&u.pending)
 	return
 }
 
 upload_queue_destroy :: proc(u: ^Upload_Queue, device: Device) {
-	if u == nil {
-		return
-	}
-
 	queue.destroy(&u.pending)
 	staging_destroy(&u.staging, device)
 	u^ = {}
 }
 
 upload_queue_retire :: proc(u: ^Upload_Queue, finished_value: u64) {
-	assert(u != nil)
 	staging_retire(&u.staging, finished_value)
 }
 
 @(require_results)
 upload_queue_flush :: proc(u: ^Upload_Queue, device: Device) -> (err: Buffer_Error) {
-	assert(u != nil)
 	staging_flush(&u.staging, device) or_return
 	return
 }
@@ -85,13 +79,14 @@ upload_queue_flush :: proc(u: ^Upload_Queue, device: Device) -> (err: Buffer_Err
 upload_buffer_reserve :: proc(
 	uqueue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
-	buffer: Buffer, 
+	buffer: Buffer,
 	size: Maybe(int) = nil,
 	usage: Maybe(Resource_Usage) = nil,
 	offset: Device_Size = 0,
-) -> (bytes: []byte, ok: bool) {
-	assert(uqueue != nil)
-
+) -> (
+	bytes: []byte,
+	ok: bool,
+) {
 	assert(buffer.size >= offset)
 	staging_size: Device_Size
 	if size == nil {
@@ -115,47 +110,56 @@ upload_buffer_reserve :: proc(
 
 	staging := staging_make(&uqueue.staging, frame_ring, []u8, staging_size) or_return
 
-	queue.enqueue(&uqueue.pending, Buffer_Upload {
-		buffer = buffer.handle,
-		usage = buffer_usage,
-		offset = offset,
-		staging = staging,
-	})
+	queue.enqueue(
+		&uqueue.pending,
+		Buffer_Upload {
+			buffer = buffer.handle,
+			usage = buffer_usage,
+			offset = offset,
+			staging = staging,
+		},
+	)
 
 	return staging.data, true
 }
 
 @(require_results)
 upload_buffer :: proc(
-	uqueue: ^Upload_Queue, 
+	uqueue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
-	buffer: Buffer, 
+	buffer: Buffer,
 	bytes: []byte,
 	usage: Resource_Usage,
 	offset: Device_Size = 0,
-) -> (ok: bool) {
+) -> (
+	ok: bool,
+) {
 	staging := upload_buffer_reserve(
-		uqueue, frame_ring, 
-		buffer, len(bytes), 
-		usage, offset,
+		uqueue,
+		frame_ring,
+		buffer,
+		len(bytes),
+		usage,
+		offset,
 	) or_return
 
 	copy(staging, bytes)
 
-	return true	
+	return true
 }
 
 @(require_results)
 upload_subbuffer_reserve :: proc(
-	uqueue: ^Upload_Queue, 
+	uqueue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
-	buffer: Pool_Subbuffer($T), 
+	buffer: Pool_Subbuffer($T),
 	count: int,
 	usage: Resource_Usage,
 	offset: Device_Size = 0,
-) -> (values: []T, ok: bool) {
-	assert(uqueue != nil)
-
+) -> (
+	values: []T,
+	ok: bool,
+) {
 	assert(buffer.size >= offset)
 	size := Device_Size(count * size_of(T))
 
@@ -167,47 +171,55 @@ upload_subbuffer_reserve :: proc(
 	assert(.TRANSFER_DST in buffer.buffer_usage)
 	staging := staging_make(&uqueue.staging, frame_ring, []u8, size) or_return
 
-	queue.enqueue(&uqueue.pending, Buffer_Upload {
-		buffer = buffer.buffer_handle,
-		offset = buffer.offset + offset,
-		usage = usage,
-		staging = staging,
-	})
+	queue.enqueue(
+		&uqueue.pending,
+		Buffer_Upload {
+			buffer = buffer.buffer_handle,
+			offset = buffer.offset + offset,
+			usage = usage,
+			staging = staging,
+		},
+	)
 
 	return slice.reinterpret([]T, staging.data), true
 }
 
 @(require_results)
 upload_subbuffer :: proc(
-	uqueue: ^Upload_Queue, 
+	uqueue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
-	buffer: Pool_Subbuffer($T), 
+	buffer: Pool_Subbuffer($T),
 	values: []T,
 	usage: Maybe(Resource_Usage) = nil,
 	offset: Device_Size = 0,
-) -> (ok: bool) {
+) -> (
+	ok: bool,
+) {
 	staging := upload_subbuffer_reserve(
-		uqueue, frame_ring, 
-		buffer, len(values), 
-		usage, offset,
+		uqueue,
+		frame_ring,
+		buffer,
+		len(values),
+		usage,
+		offset,
 	) or_return
 
 	copy(staging, values)
 
-	return true	
+	return true
 }
 
 @(require_results)
 upload_texture :: proc(
-	uqueue: ^Upload_Queue, 
+	uqueue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
-	texture: Texture, 
+	texture: Texture,
 	image: Image,
 	usage: Resource_Usage,
 	layer: int = 0,
-) -> (ok: bool) {
-	assert(uqueue != nil)
-
+) -> (
+	ok: bool,
+) {
 	assert(image_is_valid(image))
 	assert(image_format_matches_vk(image.format, texture.format))
 
@@ -216,16 +228,14 @@ upload_texture :: proc(
 	assert(texture.extent.height == u32(image.height))
 	assert(layer >= 0 && layer < int(texture.array_layers))
 	assert(.TRANSFER_DST in texture.usage)
-	
-	staging := staging_slice_clone(&uqueue.staging, frame_ring, image.bytes) or_return
-	queue.enqueue(&uqueue.pending, Texture_Upload{
-		texture = texture,
-		usage = usage,
-		staging = staging,
-		layer = u32(layer),
-	})
 
-	return true	
+	staging := staging_slice_clone(&uqueue.staging, frame_ring, image.bytes) or_return
+	queue.enqueue(
+		&uqueue.pending,
+		Texture_Upload{texture = texture, usage = usage, staging = staging, layer = u32(layer)},
+	)
+
+	return true
 }
 
 ALL_SHADER_STAGES :: vk.PipelineStageFlags2 {
@@ -273,21 +283,24 @@ resource_usage_from_buffer_usage :: proc(usage: vk.BufferUsageFlags) -> (r: Reso
 
 upload_queue_record_commands :: proc(u: ^Upload_Queue, commands: vk.CommandBuffer) {
 	pre_barriers := make([dynamic]vk.ImageMemoryBarrier2, context.temp_allocator)
-	for i in 0..<queue.len(u.pending) {
+	for i in 0 ..< queue.len(u.pending) {
 		switch upload in queue.get(&u.pending, i) {
 		case Buffer_Upload:
-			// No pre-barriers for buffers
+		// No pre-barriers for buffers
 		case Texture_Upload:
 			get_texture_pre_barrier(&pre_barriers, upload)
 		}
 	}
 
 	if len(pre_barriers) > 0 {
-		vk.CmdPipelineBarrier2(commands, &vk.DependencyInfo {
-			sType = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = u32(len(pre_barriers)),
-			pImageMemoryBarriers = raw_data(pre_barriers),
-		})
+		vk.CmdPipelineBarrier2(
+			commands,
+			&vk.DependencyInfo {
+				sType = .DEPENDENCY_INFO,
+				imageMemoryBarrierCount = u32(len(pre_barriers)),
+				pImageMemoryBarriers = raw_data(pre_barriers),
+			},
+		)
 	}
 
 	image_barriers := make([dynamic]vk.ImageMemoryBarrier2, context.temp_allocator)
@@ -302,74 +315,78 @@ upload_queue_record_commands :: proc(u: ^Upload_Queue, commands: vk.CommandBuffe
 	}
 
 	if len(image_barriers) > 0 || len(buffer_barriers) > 0 {
-		vk.CmdPipelineBarrier2(commands, &vk.DependencyInfo {
-			sType = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = u32(len(image_barriers)),
-			pImageMemoryBarriers = raw_data(image_barriers),
-			bufferMemoryBarrierCount = u32(len(buffer_barriers)),
-			pBufferMemoryBarriers = raw_data(buffer_barriers),
-		})
+		vk.CmdPipelineBarrier2(
+			commands,
+			&vk.DependencyInfo {
+				sType = .DEPENDENCY_INFO,
+				imageMemoryBarrierCount = u32(len(image_barriers)),
+				pImageMemoryBarriers = raw_data(image_barriers),
+				bufferMemoryBarrierCount = u32(len(buffer_barriers)),
+				pBufferMemoryBarriers = raw_data(buffer_barriers),
+			},
+		)
 	}
 }
 
-@(private="file")
+@(private = "file")
 get_texture_pre_barrier :: proc(
-	barriers: ^[dynamic]vk.ImageMemoryBarrier2, 
+	barriers: ^[dynamic]vk.ImageMemoryBarrier2,
 	upload: Texture_Upload,
 ) {
-	append(barriers, {
-		sType = .IMAGE_MEMORY_BARRIER_2,
-		image = upload.texture.handle,
-		srcStageMask = upload.usage.stages,
-		srcAccessMask = {},
-		dstStageMask = {.TRANSFER},
-		dstAccessMask = {.TRANSFER_WRITE},
-		oldLayout = .UNDEFINED,
-		newLayout = .TRANSFER_DST_OPTIMAL,
-		subresourceRange = {
-			aspectMask = upload.texture.full_view.aspect_mask,
-			baseArrayLayer = upload.layer,
-			layerCount = 1,
-			baseMipLevel = 0,
-			levelCount = 1,
+	append(
+		barriers,
+		{
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			image = upload.texture.handle,
+			srcStageMask = upload.usage.stages,
+			srcAccessMask = {},
+			dstStageMask = {.TRANSFER},
+			dstAccessMask = {.TRANSFER_WRITE},
+			oldLayout = .UNDEFINED,
+			newLayout = .TRANSFER_DST_OPTIMAL,
+			subresourceRange = {
+				aspectMask = upload.texture.full_view.aspect_mask,
+				baseArrayLayer = upload.layer,
+				layerCount = 1,
+				baseMipLevel = 0,
+				levelCount = 1,
+			},
 		},
-	})
+	)
 }
 
-@(private="file")
+@(private = "file")
 record_buffer_upload :: proc(
-	commands: vk.CommandBuffer, 
+	commands: vk.CommandBuffer,
 	barriers: ^[dynamic]vk.BufferMemoryBarrier2,
 	upload: Buffer_Upload,
 ) {
 	buffer_copy := vk.BufferCopy {
 		srcOffset = upload.staging.offset,
 		dstOffset = upload.offset,
-		size = staging_subbuffer_size(upload.staging),
+		size      = staging_subbuffer_size(upload.staging),
 	}
 
-	vk.CmdCopyBuffer(
-		commands,
-		upload.staging.buffer_handle,
-		upload.buffer,
-		1, &buffer_copy,
-	)
+	vk.CmdCopyBuffer(commands, upload.staging.buffer_handle, upload.buffer, 1, &buffer_copy)
 
-	append(barriers, {
-		sType = .BUFFER_MEMORY_BARRIER_2,
-		srcStageMask = {.TRANSFER},
-		srcAccessMask = {.TRANSFER_WRITE},
-		dstStageMask = upload.usage.stages,
-		dstAccessMask = upload.usage.access,
-		buffer = upload.buffer,
-		offset = upload.offset,
-		size = staging_subbuffer_size(upload.staging),
-	})
+	append(
+		barriers,
+		{
+			sType = .BUFFER_MEMORY_BARRIER_2,
+			srcStageMask = {.TRANSFER},
+			srcAccessMask = {.TRANSFER_WRITE},
+			dstStageMask = upload.usage.stages,
+			dstAccessMask = upload.usage.access,
+			buffer = upload.buffer,
+			offset = upload.offset,
+			size = staging_subbuffer_size(upload.staging),
+		},
+	)
 }
 
-@(private="file")
+@(private = "file")
 record_texture_upload :: proc(
-	commands: vk.CommandBuffer, 
+	commands: vk.CommandBuffer,
 	barriers: ^[dynamic]vk.ImageMemoryBarrier2,
 	upload: Texture_Upload,
 ) {
@@ -384,28 +401,32 @@ record_texture_upload :: proc(
 		},
 	}
 	vk.CmdCopyBufferToImage(
-		commands, 
-		upload.staging.buffer_handle, 
-		upload.texture.handle, 
+		commands,
+		upload.staging.buffer_handle,
+		upload.texture.handle,
 		.TRANSFER_DST_OPTIMAL,
-		1, &image_copy,
+		1,
+		&image_copy,
 	)
 
-	append(barriers, {
-		sType = .IMAGE_MEMORY_BARRIER_2,
-		image = upload.texture.handle,
-		srcStageMask = {.TRANSFER},
-		srcAccessMask = {.TRANSFER_WRITE},
-		dstStageMask = upload.usage.stages,
-		dstAccessMask = upload.usage.access,
-		oldLayout = .TRANSFER_DST_OPTIMAL,
-		newLayout = upload.usage.layout,
-		subresourceRange = {
-			aspectMask = upload.texture.full_view.aspect_mask,
-			baseArrayLayer = upload.layer,
-			layerCount = 1,
-			baseMipLevel = 0,
-			levelCount = 1,
+	append(
+		barriers,
+		{
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			image = upload.texture.handle,
+			srcStageMask = {.TRANSFER},
+			srcAccessMask = {.TRANSFER_WRITE},
+			dstStageMask = upload.usage.stages,
+			dstAccessMask = upload.usage.access,
+			oldLayout = .TRANSFER_DST_OPTIMAL,
+			newLayout = upload.usage.layout,
+			subresourceRange = {
+				aspectMask = upload.texture.full_view.aspect_mask,
+				baseArrayLayer = upload.layer,
+				layerCount = 1,
+				baseMipLevel = 0,
+				levelCount = 1,
+			},
 		},
-	})
+	)
 }

@@ -77,38 +77,45 @@ delete_mesh :: proc(mesh: Mesh, allocator := context.allocator) {
 }
 
 Mesh_Builder :: struct {
-	attributes: Vertex_Attribute_Set,
-	indices: [dynamic]u32,
-	positions: [dynamic][3]f32,
-	normals: [dynamic][3]f32,
-	tangents: [dynamic][4]f32,
+	attributes:   Vertex_Attribute_Set,
+	indices:      [dynamic]u32,
+	positions:    [dynamic][3]f32,
+	normals:      [dynamic][3]f32,
+	tangents:     [dynamic][4]f32,
 	tex_coords_0: [dynamic][2]f32,
 	tex_coords_1: [dynamic][2]f32,
-	color: [dynamic][4]f32,
-	joints: [dynamic][4]u16,
-	weights: [dynamic][4]f32,
+	color:        [dynamic][4]f32,
+	joints:       [dynamic][4]u16,
+	weights:      [dynamic][4]f32,
 }
 
 Builder_Vertex :: struct {
-	position: [3]f32,
-	normal: [3]f32,
-	tangent: [4]f32,
+	position:    [3]f32,
+	normal:      [3]f32,
+	tangent:     [4]f32,
 	tex_coord_0: [2]f32,
 	tex_coord_1: [2]f32,
-	color: [4]f32,
-	joints: [4]u16,
-	weights: [4]f32,
+	color:       [4]f32,
+	joints:      [4]u16,
+	weights:     [4]f32,
 }
 
 BUILDER_VERTEX_DEFAULT :: Builder_Vertex {
-	normal = {0, 1, 0},
+	normal  = {0, 1, 0},
 	tangent = {1, 0, 0, 1},
-	color = {1, 1, 1, 1},
+	color   = {1, 1, 1, 1},
 	weights = {1, 0, 0, 0},
 }
 
 BUILDER_SUPPORTED_ATTRIBUTES :: Vertex_Attribute_Set {
-	.Position, .Normal, .Tangent, .Tex_Coord_0, .Tex_Coord_1, .Color, .Joints, .Weights,
+	.Position,
+	.Normal,
+	.Tangent,
+	.Tex_Coord_0,
+	.Tex_Coord_1,
+	.Color,
+	.Joints,
+	.Weights,
 }
 
 mesh_builder_init :: proc(
@@ -116,9 +123,11 @@ mesh_builder_init :: proc(
 	attributes: Vertex_Attribute_Set,
 	allocator := context.allocator,
 ) {
-	assert(builder != nil)
 	assert(.Position in attributes, "Mesh_Builder requires .Position")
-	assert(attributes <= BUILDER_SUPPORTED_ATTRIBUTES, "Mesh_Builder does not support custom attributes")
+	assert(
+		attributes <= BUILDER_SUPPORTED_ATTRIBUTES,
+		"Mesh_Builder does not support custom attributes",
+	)
 
 	builder^ = {}
 	builder.attributes = attributes
@@ -134,9 +143,6 @@ mesh_builder_init :: proc(
 }
 
 mesh_builder_destroy :: proc(builder: ^Mesh_Builder) {
-	if builder == nil {
-		return
-	}
 	delete(builder.indices)
 	delete(builder.positions)
 	delete(builder.normals)
@@ -150,7 +156,6 @@ mesh_builder_destroy :: proc(builder: ^Mesh_Builder) {
 }
 
 mesh_builder_clear :: proc(builder: ^Mesh_Builder) {
-	assert(builder != nil)
 	clear(&builder.indices)
 	clear(&builder.positions)
 	clear(&builder.normals)
@@ -168,17 +173,16 @@ mesh_builder_vertex_count :: proc(b: ^Mesh_Builder) -> int {
 }
 
 mesh_builder_add_vertex :: proc(b: ^Mesh_Builder, v: Builder_Vertex) -> (index: u32) {
-	assert(b != nil)
 	index = u32(len(b.positions))
 
 	append(&b.positions, v.position)
-	if .Normal in b.attributes      { append(&b.normals, v.normal) }
-	if .Tangent in b.attributes     { append(&b.tangents, v.tangent) }
-	if .Tex_Coord_0 in b.attributes { append(&b.tex_coords_0, v.tex_coord_0) }
-	if .Tex_Coord_1 in b.attributes { append(&b.tex_coords_1, v.tex_coord_1) }
-	if .Color in b.attributes       { append(&b.color, v.color) }
-	if .Joints in b.attributes      { append(&b.joints, v.joints) }
-	if .Weights in b.attributes     { append(&b.weights, v.weights) }
+	if .Normal in b.attributes {append(&b.normals, v.normal)}
+	if .Tangent in b.attributes {append(&b.tangents, v.tangent)}
+	if .Tex_Coord_0 in b.attributes {append(&b.tex_coords_0, v.tex_coord_0)}
+	if .Tex_Coord_1 in b.attributes {append(&b.tex_coords_1, v.tex_coord_1)}
+	if .Color in b.attributes {append(&b.color, v.color)}
+	if .Joints in b.attributes {append(&b.joints, v.joints)}
+	if .Weights in b.attributes {append(&b.weights, v.weights)}
 	return
 }
 
@@ -213,7 +217,6 @@ mesh_builder_add_flat_quad :: proc(b: ^Mesh_Builder, bl, br, tr, tl: Builder_Ver
 
 @(require_results)
 mesh_builder_to_mesh :: proc(b: ^Mesh_Builder) -> (mesh: Mesh) {
-	assert(b != nil)
 	mesh.vertex_count = len(b.positions)
 
 	attach_data(&mesh, b.attributes, .Position, .F32x3, b.positions[:])
@@ -233,8 +236,6 @@ mesh_builder_to_mesh :: proc(b: ^Mesh_Builder) -> (mesh: Mesh) {
 
 @(require_results)
 mesh_builder_take_mesh :: proc(b: ^Mesh_Builder) -> Mesh {
-	assert(b != nil)
-
 	shrink(&b.indices)
 	shrink(&b.positions)
 	shrink(&b.normals)
@@ -253,7 +254,7 @@ mesh_builder_take_mesh :: proc(b: ^Mesh_Builder) -> Mesh {
 	return mesh
 }
 
-@(private="file")
+@(private = "file")
 attach_data :: proc(
 	mesh: ^Mesh,
 	enabled: Vertex_Attribute_Set,
@@ -269,12 +270,16 @@ attach_data :: proc(
 	assert(size_of(E) == VERTEX_ATTRIBUTE_ENCODING_SIZE[encoding], loc = location)
 	mesh.attributes[attribute] = Vertex_Attribute_Data {
 		encoding = encoding,
-		data = slice.to_bytes(data),
+		data     = slice.to_bytes(data),
 	}
 }
 
-@(private="file")
-make_vertex :: proc(position, normal: [3]f32, tangent: [4]f32, tex_coord: [2]f32) -> Builder_Vertex {
+@(private = "file")
+make_vertex :: proc(
+	position, normal: [3]f32,
+	tangent: [4]f32,
+	tex_coord: [2]f32,
+) -> Builder_Vertex {
 	v := BUILDER_VERTEX_DEFAULT
 	v.position = position
 	v.normal = normal
@@ -284,7 +289,7 @@ make_vertex :: proc(position, normal: [3]f32, tangent: [4]f32, tex_coord: [2]f32
 	return v
 }
 
-@(private="file")
+@(private = "file")
 with_frame :: proc(v: Builder_Vertex, normal: [3]f32, tangent: [4]f32) -> Builder_Vertex {
 	result := v
 	result.normal = normal
@@ -292,7 +297,7 @@ with_frame :: proc(v: Builder_Vertex, normal: [3]f32, tangent: [4]f32) -> Builde
 	return result
 }
 
-@(private="file")
+@(private = "file")
 face_tangent :: proc(v0, v1, v2: Builder_Vertex, normal: [3]f32) -> [4]f32 {
 	e1, e2 := v1.position - v0.position, v2.position - v0.position
 	d1, d2 := v1.tex_coord_0 - v0.tex_coord_0, v2.tex_coord_0 - v0.tex_coord_0
@@ -308,19 +313,19 @@ face_tangent :: proc(v0, v1, v2: Builder_Vertex, normal: [3]f32) -> [4]f32 {
 	return {tangent.x, tangent.y, tangent.z, w}
 }
 
-@(private="file")
+@(private = "file")
 Cuboid_Face :: struct {
 	normal, right, up: [3]f32,
 }
 
-@(private="file")
+@(private = "file")
 CUBOID_FACES :: [6]Cuboid_Face {
-	{normal = { 0,  0, -1}, right = { 1, 0,  0}, up = {0, 1, 0}},
-	{normal = { 0,  0,  1}, right = {-1, 0,  0}, up = {0, 1, 0}},
-	{normal = { 1,  0,  0}, right = { 0, 0,  1}, up = {0, 1, 0}},
-	{normal = {-1,  0,  0}, right = { 0, 0, -1}, up = {0, 1, 0}},
-	{normal = { 0,  1,  0}, right = { 1, 0,  0}, up = {0, 0, 1}},
-	{normal = { 0, -1,  0}, right = {-1, 0,  0}, up = {0, 0, 1}},
+	{normal = {0, 0, -1}, right = {1, 0, 0}, up = {0, 1, 0}},
+	{normal = {0, 0, 1}, right = {-1, 0, 0}, up = {0, 1, 0}},
+	{normal = {1, 0, 0}, right = {0, 0, 1}, up = {0, 1, 0}},
+	{normal = {-1, 0, 0}, right = {0, 0, -1}, up = {0, 1, 0}},
+	{normal = {0, 1, 0}, right = {1, 0, 0}, up = {0, 0, 1}},
+	{normal = {0, -1, 0}, right = {-1, 0, 0}, up = {0, 0, 1}},
 }
 
 mesh_builder_add_cube :: proc(b: ^Mesh_Builder, size: f32 = 1) {
@@ -356,13 +361,13 @@ mesh_builder_add_sphere :: proc(
 	case .Smooth:
 		base := u32(mesh_builder_vertex_count(b))
 		row := u32(slices + 1)
-		for stack in 0..=stacks {
-			for column in 0..=slices {
+		for stack in 0 ..= stacks {
+			for column in 0 ..= slices {
 				mesh_builder_add_vertex(b, sphere_vertex(radius, stack, stacks, column, slices))
 			}
 		}
-		for stack in 0..<stacks {
-			for column in 0..<slices {
+		for stack in 0 ..< stacks {
+			for column in 0 ..< slices {
 				tl := base + u32(stack) * row + u32(column)
 				tr := tl + 1
 				bl := tl + row
@@ -378,8 +383,8 @@ mesh_builder_add_sphere :: proc(
 		}
 
 	case .Flat:
-		for stack in 0..<stacks {
-			for column in 0..<slices {
+		for stack in 0 ..< stacks {
+			for column in 0 ..< slices {
 				tl := sphere_vertex(radius, stack, stacks, column, slices)
 				tr := sphere_vertex(radius, stack, stacks, column + 1, slices)
 				bl := sphere_vertex(radius, stack + 1, stacks, column, slices)
@@ -396,7 +401,7 @@ mesh_builder_add_sphere :: proc(
 	}
 }
 
-@(private="file")
+@(private = "file")
 sphere_vertex :: proc(radius: f32, stack, stacks, column, slices: int) -> Builder_Vertex {
 	phi := math.PI * f32(stack) / f32(stacks) // 0 at the top pole
 	sin_phi, cos_phi := math.sin(phi), math.cos(phi)
@@ -428,11 +433,14 @@ mesh_builder_add_cylinder :: proc(
 	switch shading {
 	case .Smooth:
 		side := u32(mesh_builder_vertex_count(b))
-		for column in 0..=slices {
-			mesh_builder_add_vertex(b, cylinder_side_vertex(radius, h, column, slices, top = false))
+		for column in 0 ..= slices {
+			mesh_builder_add_vertex(
+				b,
+				cylinder_side_vertex(radius, h, column, slices, top = false),
+			)
 			mesh_builder_add_vertex(b, cylinder_side_vertex(radius, h, column, slices, top = true))
 		}
-		for column in 0..<u32(slices) {
+		for column in 0 ..< u32(slices) {
 			bl := side + column * 2
 			tl := bl + 1
 			br := bl + 2
@@ -441,7 +449,7 @@ mesh_builder_add_cylinder :: proc(
 		}
 
 	case .Flat:
-		for column in 0..<slices {
+		for column in 0 ..< slices {
 			mesh_builder_add_flat_quad(
 				b,
 				cylinder_side_vertex(radius, h, column, slices, top = false),
@@ -456,8 +464,12 @@ mesh_builder_add_cylinder :: proc(
 	add_cylinder_cap(b, radius, -h, slices, top = false)
 }
 
-@(private="file")
-cylinder_side_vertex :: proc(radius, half_height: f32, column, slices: int, top: bool) -> Builder_Vertex {
+@(private = "file")
+cylinder_side_vertex :: proc(
+	radius, half_height: f32,
+	column, slices: int,
+	top: bool,
+) -> Builder_Vertex {
 	theta := math.TAU * f32(column) / f32(slices)
 	sin_theta, cos_theta := math.sin(theta), math.cos(theta)
 
@@ -465,24 +477,33 @@ cylinder_side_vertex :: proc(radius, half_height: f32, column, slices: int, top:
 	tangent := [4]f32{-sin_theta, 0, cos_theta, 1}
 	y := half_height if top else -half_height
 	v: f32 = 0 if top else 1
-	return make_vertex(normal * radius + {0, y, 0}, normal, tangent, {f32(column) / f32(slices), v})
+	return make_vertex(
+		normal * radius + {0, y, 0},
+		normal,
+		tangent,
+		{f32(column) / f32(slices), v},
+	)
 }
 
-@(private="file")
+@(private = "file")
 add_cylinder_cap :: proc(b: ^Mesh_Builder, radius, y: f32, slices: int, top: bool) {
 	normal := [3]f32{0, 1, 0} if top else [3]f32{0, -1, 0}
 	tangent := [4]f32{1, 0, 0, 1} if top else [4]f32{-1, 0, 0, 1}
 
 	center := mesh_builder_add_vertex(b, make_vertex({0, y, 0}, normal, tangent, {0.5, 0.5}))
 	first := u32(mesh_builder_vertex_count(b))
-	for column in 0..=slices {
+	for column in 0 ..= slices {
 		theta := math.TAU * f32(column) / f32(slices)
 		c, s := math.cos(theta), math.sin(theta)
-		tex_coord := [2]f32{0.5 + 0.5 * c, 0.5 - 0.5 * s} if top else [2]f32{0.5 - 0.5 * c, 0.5 - 0.5 * s}
-		mesh_builder_add_vertex(b, make_vertex({c * radius, y, s * radius}, normal, tangent, tex_coord))
+		tex_coord :=
+			[2]f32{0.5 + 0.5 * c, 0.5 - 0.5 * s} if top else [2]f32{0.5 - 0.5 * c, 0.5 - 0.5 * s}
+		mesh_builder_add_vertex(
+			b,
+			make_vertex({c * radius, y, s * radius}, normal, tangent, tex_coord),
+		)
 	}
 
-	for column in 0..<u32(slices) {
+	for column in 0 ..< u32(slices) {
 		if top {
 			mesh_builder_add_triangle(b, center, first + column, first + column + 1)
 		} else {

@@ -1,6 +1,6 @@
 package main
-import vk "vendor:vulkan"
 import "core:container/handle_map"
+import vk "vendor:vulkan"
 
 Texture_Handle :: distinct handle_map.Handle64
 
@@ -31,12 +31,12 @@ Texture_Colorspace :: enum {
 }
 
 Texture_Sampler_Options :: struct {
-    min_filter:     Texture_Filter,
-    mipmap_mode:    Texture_Mipmap_Mode,
-    max_anisotropy: Maybe(f32),
-    min_lod:        f32,
-    max_lod:        Maybe(f32),
-    lod_bias:       f32,
+	min_filter:     Texture_Filter,
+	mipmap_mode:    Texture_Mipmap_Mode,
+	max_anisotropy: Maybe(f32),
+	min_lod:        f32,
+	max_lod:        Maybe(f32),
+	lod_bias:       f32,
 }
 
 Texture_Options :: struct {
@@ -75,11 +75,7 @@ Texture_Error :: union #shared_nil {
 
 @(require_results)
 default_texture_sampler_options :: proc() -> Texture_Sampler_Options {
-	return {
-		min_filter = .Linear,
-		mipmap_mode = .Linear,
-		max_anisotropy = 4.0,
-	}
+	return {min_filter = .Linear, mipmap_mode = .Linear, max_anisotropy = 4.0}
 }
 
 @(require_results)
@@ -89,16 +85,20 @@ get_texture_sampler_index :: proc(sampler: Texture_Sampler) -> u32 {
 
 texture_filter_to_vk :: proc(filter: Texture_Filter) -> vk.Filter {
 	switch filter {
-	case .Linear: return .LINEAR
-	case .Nearest: return .NEAREST
+	case .Linear:
+		return .LINEAR
+	case .Nearest:
+		return .NEAREST
 	}
 	return .NEAREST
 }
 
 texture_mipmap_mode_to_vk :: proc(mode: Texture_Mipmap_Mode) -> vk.SamplerMipmapMode {
 	switch mode {
-	case .Linear: return .LINEAR
-	case .Nearest: return .NEAREST
+	case .Linear:
+		return .LINEAR
+	case .Nearest:
+		return .NEAREST
 	}
 	return .NEAREST
 }

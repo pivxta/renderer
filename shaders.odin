@@ -7,27 +7,27 @@ import vk "vendor:vulkan"
 Shader_Program_Id :: distinct u32
 
 Shaders :: struct {
-	modules:          [dynamic]Shader_Module,
-	modules_by_name:  map[string]int,
-	programs:         [dynamic]Shader_Program,
-	programs_by_key:  map[Shader_Program_Key]Shader_Program_Id,
-	allocator:        runtime.Allocator,
+	modules:         [dynamic]Shader_Module,
+	modules_by_name: map[string]int,
+	programs:        [dynamic]Shader_Program,
+	programs_by_key: map[Shader_Program_Key]Shader_Program_Id,
+	allocator:       runtime.Allocator,
 }
 
-@(private="file")
+@(private = "file")
 Shader_Module :: struct {
 	name:   string,
 	handle: vk.ShaderModule,
 }
 
-@(private="file")
+@(private = "file")
 Shader_Program_Key :: struct {
 	module_name: string,
 	entry_name:  string,
 	stage:       vk.ShaderStageFlag,
 }
 
-@(private="file")
+@(private = "file")
 Shader_Program :: struct {
 	module_index: int,
 	entry_name:   cstring,
@@ -35,7 +35,6 @@ Shader_Program :: struct {
 }
 
 shaders_init :: proc(shaders: ^Shaders, allocator := context.allocator) {
-	assert(shaders != nil)
 	shaders.modules = make([dynamic]Shader_Module, allocator)
 	shaders.modules_by_name = make(map[string]int, allocator)
 	shaders.programs = make([dynamic]Shader_Program, allocator)
@@ -46,10 +45,6 @@ shaders_init :: proc(shaders: ^Shaders, allocator := context.allocator) {
 }
 
 shaders_destroy :: proc(shaders: ^Shaders, device: Device) {
-	if shaders == nil {
-		return
-	}
-
 	for module in shaders.modules {
 		delete(module.name, shaders.allocator)
 		if module.handle != 0 {
@@ -74,18 +69,16 @@ shaders_destroy :: proc(shaders: ^Shaders, device: Device) {
 
 @(require_results)
 shaders_load_module :: proc(
-	shaders: ^Shaders, 
-	device: Device, 
-	name: string, 
+	shaders: ^Shaders,
+	device: Device,
+	name: string,
 	spirv: []u32,
 ) -> vk.Result {
-	assert(shaders != nil)
-
 	new_module: vk.ShaderModule
 	new_module_info := vk.ShaderModuleCreateInfo {
-		sType = .SHADER_MODULE_CREATE_INFO,
+		sType    = .SHADER_MODULE_CREATE_INFO,
 		codeSize = slice.size(spirv),
-		pCode = raw_data(spirv),
+		pCode    = raw_data(spirv),
 	}
 	vk.CreateShaderModule(device.logical, &new_module_info, nil, &new_module) or_return
 
@@ -98,10 +91,7 @@ shaders_load_module :: proc(
 	} else {
 		module_index = len(shaders.modules)
 		module_name := strings.clone(name, shaders.allocator)
-		append(&shaders.modules, { 
-			name = module_name,
-			handle = new_module,
-		})
+		append(&shaders.modules, {name = module_name, handle = new_module})
 		shaders.modules_by_name[module_name] = module_index
 	}
 	return .SUCCESS
@@ -113,9 +103,10 @@ shaders_get_program :: proc(
 	module: string,
 	entry: string,
 	stage: vk.ShaderStageFlag,
-) -> (Shader_Program_Id, bool) {
-	assert(shaders != nil)
-
+) -> (
+	Shader_Program_Id,
+	bool,
+) {
 	if program_id, ok := shaders.programs_by_key[{module, entry, stage}]; ok {
 		return program_id, true
 	}
@@ -129,22 +120,21 @@ shaders_get_program :: proc(
 	entry_name := strings.clone(entry, shaders.allocator)
 	entry_cname := strings.clone_to_cstring(entry, shaders.allocator)
 	program_key := Shader_Program_Key {
-		module_name = shaders.modules[module_index].name, 
-		entry_name = entry_name, 
-		stage = stage,
+		module_name = shaders.modules[module_index].name,
+		entry_name  = entry_name,
+		stage       = stage,
 	}
-	append(&shaders.programs, {
-		module_index = module_index,
-		entry_name = entry_cname,
-		stage = stage,
-	})
+	append(
+		&shaders.programs,
+		{module_index = module_index, entry_name = entry_cname, stage = stage},
+	)
 	shaders.programs_by_key[program_key] = program_id
 	return program_id, true
 }
 
 @(require_results)
 shaders_get_stage_info :: proc(
-	shaders: Shaders, 
+	shaders: Shaders,
 	id: Shader_Program_Id,
 ) -> vk.PipelineShaderStageCreateInfo {
 	assert(int(id) != 0)

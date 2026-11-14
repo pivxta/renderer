@@ -1,43 +1,41 @@
 package main
 import "core:log"
 import "core:slice"
-import vk "vendor:vulkan"
 import "third_party/vma"
+import vk "vendor:vulkan"
 
 Texture :: struct {
-	handle: vk.Image,
-	allocation: vma.Allocation,
-	allocated: bool,
-	full_view: Texture_View,
-
-	type: vk.ImageType,
-	usage: vk.ImageUsageFlags,
-	format: vk.Format,
-	extent: vk.Extent3D,
-	samples: vk.SampleCountFlags,
-	mip_levels: u32,
+	handle:       vk.Image,
+	allocation:   vma.Allocation,
+	allocated:    bool,
+	full_view:    Texture_View,
+	type:         vk.ImageType,
+	usage:        vk.ImageUsageFlags,
+	format:       vk.Format,
+	extent:       vk.Extent3D,
+	samples:      vk.SampleCountFlags,
+	mip_levels:   u32,
 	array_layers: u32,
-	is_cube: bool,
+	is_cube:      bool,
 }
 
 Texture_View :: struct {
-	handle: vk.ImageView,
-
-	type: vk.ImageViewType,
-	aspect_mask: vk.ImageAspectFlags,
-	base_mip_level: u32,
-	mip_level_count: u32,
-	base_array_layer: u32,
+	handle:            vk.ImageView,
+	type:              vk.ImageViewType,
+	aspect_mask:       vk.ImageAspectFlags,
+	base_mip_level:    u32,
+	mip_level_count:   u32,
+	base_array_layer:  u32,
 	array_layer_count: u32,
 }
 
 Buffer :: struct {
-	handle: vk.Buffer,
+	handle:     vk.Buffer,
 	allocation: vma.Allocation,
-	usage: vk.BufferUsageFlags,
-	mapped: []byte,
-	address: Device_Address,
-	size: Device_Size,
+	usage:      vk.BufferUsageFlags,
+	mapped:     []byte,
+	address:    Device_Address,
+	size:       Device_Size,
 }
 
 Buffer_Init_Error :: enum {
@@ -59,7 +57,7 @@ Buffer_Error :: union #shared_nil {
 
 @(require_results)
 texture_init :: proc(
-	texture: ^Texture, 
+	texture: ^Texture,
 	device: Device,
 	type: vk.ImageType,
 	usage: vk.ImageUsageFlags,
@@ -71,17 +69,15 @@ texture_init :: proc(
 	is_cube := false,
 	location := #caller_location,
 ) -> Texture_Error {
-	assert(texture != nil, loc=location)
-
 	create_info := vk.ImageCreateInfo {
-		sType = .IMAGE_CREATE_INFO,
-		flags = {.CUBE_COMPATIBLE} if is_cube else {},
-		imageType = type,
-		usage = usage,
-		format = format,
-		extent = extent,
-		samples = samples,
-		mipLevels = mip_levels,
+		sType       = .IMAGE_CREATE_INFO,
+		flags       = {.CUBE_COMPATIBLE} if is_cube else {},
+		imageType   = type,
+		usage       = usage,
+		format      = format,
+		extent      = extent,
+		samples     = samples,
+		mipLevels   = mip_levels,
 		arrayLayers = array_layers,
 	}
 	alloc_info := vma.AllocationCreateInfo {
@@ -92,14 +88,19 @@ texture_init :: proc(
 	texture^ = {}
 
 	vma.CreateImage(
-		device.allocator, 
-		create_info, alloc_info, 
-		&texture.handle, &texture.allocation, nil,
+		device.allocator,
+		create_info,
+		alloc_info,
+		&texture.handle,
+		&texture.allocation,
+		nil,
 	) or_return
 
 	if texture.handle == 0 {
-		log.error("Failed to create texture, out of memory or invalid configuration", 
-		          location=location)
+		log.error(
+			"Failed to create texture, out of memory or invalid configuration",
+			location = location,
+		)
 		return Texture_Init_Error.Allocation_Failed
 	}
 
@@ -122,7 +123,7 @@ texture_init :: proc(
 
 @(require_results)
 texture_wrap :: proc(
-	texture: ^Texture, 
+	texture: ^Texture,
 	device: Device,
 	image: vk.Image,
 	type: vk.ImageType,
@@ -135,12 +136,10 @@ texture_wrap :: proc(
 	is_cube := false,
 	location := #caller_location,
 ) -> Texture_Error {
-	assert(texture != nil, loc=location)
-
 	texture_destroy(texture, device)
 	texture^ = {}
 
-	assert(image != 0, loc=location)
+	assert(image != 0, loc = location)
 	texture.allocated = false
 	texture.handle = image
 	texture.type = type
@@ -170,7 +169,7 @@ texture_destroy :: proc(texture: ^Texture, device: Device) {
 @(require_results)
 view_create :: proc(
 	view: ^Texture_View,
-	texture: Texture, 
+	texture: Texture,
 	device: Device,
 	base_mip_level: u32 = 0,
 	mip_level_count: Maybe(u32) = nil,
@@ -178,25 +177,32 @@ view_create :: proc(
 	array_layer_count: Maybe(u32) = nil,
 	location := #caller_location,
 ) -> Texture_Error {
-	assert(view != nil, loc=location)
-	assert(texture.handle != 0, loc=location)
-	assert(texture.mip_levels != 0, loc=location)
-	assert(texture.array_layers != 0, loc=location)
+	assert(texture.handle != 0, loc = location)
+	assert(texture.mip_levels != 0, loc = location)
+	assert(texture.array_layers != 0, loc = location)
 
 	view^ = {}
 
 	if base_mip_level >= texture.mip_levels {
-		log.errorf("Invalid subresource range for texture view creation. " +
-			       "Base mip level is out of bounds (base_mip_level: %v, " +
-				   "texture_mip_level_count: %v)",
-		           base_mip_level, texture.mip_levels, location=location)
+		log.errorf(
+			"Invalid subresource range for texture view creation. " +
+			"Base mip level is out of bounds (base_mip_level: %v, " +
+			"texture_mip_level_count: %v)",
+			base_mip_level,
+			texture.mip_levels,
+			location = location,
+		)
 		return Texture_Access_Error.Subresource_Range_Out_Of_Bounds
 	}
 	if base_array_layer >= texture.array_layers {
-		log.errorf("Invalid subresource range for texture view creation. " +
-			       "Base array layer is out of bounds (base_array_layer: %v," +
-				   "texture_array_layer_count: %v)",
-		           base_array_layer, texture.array_layers, location=location)
+		log.errorf(
+			"Invalid subresource range for texture view creation. " +
+			"Base array layer is out of bounds (base_array_layer: %v," +
+			"texture_array_layer_count: %v)",
+			base_array_layer,
+			texture.array_layers,
+			location = location,
+		)
 		return Texture_Access_Error.Subresource_Range_Out_Of_Bounds
 	}
 
@@ -206,22 +212,32 @@ view_create :: proc(
 	if mip_level_count == nil {
 		level_count = texture.mip_levels - base_mip_level
 	} else if base_mip_level + mip_level_count.? > texture.mip_levels {
-		log.errorf("Invalid subresource range for texture view creation. " +
-			       "Mip level count is out of bounds (base_mip_level: %v, " +
-				   "mip_level_count: %v, texture_mip_level_count: %v)",
-		           base_mip_level, mip_level_count.?, texture.mip_levels, location=location)
+		log.errorf(
+			"Invalid subresource range for texture view creation. " +
+			"Mip level count is out of bounds (base_mip_level: %v, " +
+			"mip_level_count: %v, texture_mip_level_count: %v)",
+			base_mip_level,
+			mip_level_count.?,
+			texture.mip_levels,
+			location = location,
+		)
 		return Texture_Access_Error.Subresource_Range_Out_Of_Bounds
- 	} else {
+	} else {
 		level_count = mip_level_count.?
 	}
 
 	if array_layer_count == nil {
 		layer_count = texture.array_layers - base_array_layer
 	} else if base_array_layer + array_layer_count.? > texture.array_layers {
-		log.errorf("Invalid subresource range for texture view creation. " +
-			       "Array layer count is out of bounds (base_array_layer: %v, " +
-				   "array_layer_count: %v, texture_array_layer_count: %v)",
-		           base_array_layer, array_layer_count.?, texture.array_layers, location=location)
+		log.errorf(
+			"Invalid subresource range for texture view creation. " +
+			"Array layer count is out of bounds (base_array_layer: %v, " +
+			"array_layer_count: %v, texture_array_layer_count: %v)",
+			base_array_layer,
+			array_layer_count.?,
+			texture.array_layers,
+			location = location,
+		)
 		return Texture_Access_Error.Subresource_Range_Out_Of_Bounds
 	} else {
 		layer_count = array_layer_count.?
@@ -271,7 +287,7 @@ view_destroy :: proc(view: ^Texture_View, device: Device) {
 	if view.handle != 0 {
 		vk.DestroyImageView(device.logical, view.handle, nil)
 	}
-	
+
 	view^ = {}
 }
 
@@ -288,23 +304,30 @@ view_subresource_range :: proc(view: Texture_View) -> vk.ImageSubresourceRange {
 full_view_type :: proc(texture: Texture) -> (vk.ImageViewType, bool) {
 	if texture.array_layers == 1 {
 		if texture.is_cube {
-			log.errorf("Trying to create view of invalid cube texture. " +
-			           "Cube textures must have 6 array layers and " +
-			           "cube texture arrays must have a multiple of 6")
+			log.errorf(
+				"Trying to create view of invalid cube texture. " +
+				"Cube textures must have 6 array layers and " +
+				"cube texture arrays must have a multiple of 6",
+			)
 			return {}, false
 		}
 
 		switch texture.type {
-		case .D1: return .D1, true	
-		case .D2: return .D2, true
-		case .D3: return .D3, true
+		case .D1:
+			return .D1, true
+		case .D2:
+			return .D2, true
+		case .D3:
+			return .D3, true
 		}
 	} else {
 		if texture.is_cube {
 			if texture.array_layers % 6 != 0 {
-				log.errorf("Trying to create view of invalid cube texture. " +
-						   "Cube textures must have 6 array layers and " +
-						   "cube texture arrays must have a multiple of 6")
+				log.errorf(
+					"Trying to create view of invalid cube texture. " +
+					"Cube textures must have 6 array layers and " +
+					"cube texture arrays must have a multiple of 6",
+				)
 				return {}, false
 			}
 
@@ -317,11 +340,13 @@ full_view_type :: proc(texture: Texture) -> (vk.ImageViewType, bool) {
 		}
 
 		switch texture.type {
-		case .D1: return .D1_ARRAY, true
-		case .D2: return .D2_ARRAY, true
+		case .D1:
+			return .D1_ARRAY, true
+		case .D2:
+			return .D2_ARRAY, true
 		case .D3:
 			log.errorf("Arrays of 3D textures are not supported")
-			return .D3, false	
+			return .D3, false
 		}
 	}
 	return {}, false
@@ -377,17 +402,15 @@ format_aspect_mask :: proc(format: vk.Format) -> vk.ImageAspectFlags {
 @(require_results)
 buffer_init :: proc(
 	buffer: ^Buffer,
-	device: Device, 
+	device: Device,
 	#any_int size: Device_Size,
 	buffer_usage: vk.BufferUsageFlags,
 	memory_usage: vma.MemoryUsage = .AUTO,
 	memory_flags: vma.AllocationCreateFlags = {},
 	location := #caller_location,
 ) -> Buffer_Error {
-	assert(buffer != nil, loc=location)
-
 	if size == 0 {
-		log.error("Buffer cannot be zero-sized", location=location)
+		log.error("Buffer cannot be zero-sized", location = location)
 		return Buffer_Init_Error.Zero_Sized
 	}
 
@@ -397,7 +420,7 @@ buffer_init :: proc(
 	buffer_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
 		usage = buffer_usage,
-		size = Device_Size(size),
+		size  = Device_Size(size),
 	}
 	alloc_create_info := vma.AllocationCreateInfo {
 		usage = memory_usage,
@@ -410,23 +433,26 @@ buffer_init :: proc(
 	alloc_info: vma.AllocationInfo
 
 	vma.CreateBuffer(
-		device.allocator, 
-		buffer_info, 
-		alloc_create_info, 
-		&handle, &allocation,
+		device.allocator,
+		buffer_info,
+		alloc_create_info,
+		&handle,
+		&allocation,
 		&alloc_info,
 	) or_return
 
 	if .SHADER_DEVICE_ADDRESS in buffer_usage {
 		address_info := vk.BufferDeviceAddressInfo {
-			sType = .BUFFER_DEVICE_ADDRESS_INFO,
+			sType  = .BUFFER_DEVICE_ADDRESS_INFO,
 			buffer = handle,
 		}
 
 		address = vk.GetBufferDeviceAddress(device.logical, &address_info)
 		if address == 0 {
-			log.error("Buffer requested shader device address, but none was assigned", 
-			          location=location)
+			log.error(
+				"Buffer requested shader device address, but none was assigned",
+				location = location,
+			)
 			vma.DestroyBuffer(device.allocator, handle, allocation)
 			return Buffer_Init_Error.No_Device_Address_Available
 		}
@@ -446,18 +472,22 @@ buffer_init :: proc(
 
 @(require_results)
 buffer_flush :: proc(
-	buffer: Buffer, 
-	device: Device, 
+	buffer: Buffer,
+	device: Device,
 	#any_int offset: Device_Size = 0,
 	#any_int size: Device_Size = 0,
 	location := #caller_location,
 ) -> Buffer_Error {
 	if offset > buffer.size {
-		log.errorf("Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)", 
-		           offset, buffer.size, location=location)
+		log.errorf(
+			"Trying to flush buffer out of its bounds (offset: %v, buffer_size: %v)",
+			offset,
+			buffer.size,
+			location = location,
+		)
 		return Buffer_Access_Error.Flush_Out_Of_Bounds
 	}
-	
+
 	flush_size: Device_Size
 	if size == 0 {
 		flush_size = buffer.size - offset
@@ -465,20 +495,12 @@ buffer_flush :: proc(
 		flush_size = min(size, buffer.size - offset)
 	}
 
-	vma.FlushAllocation(
-		device.allocator,
-		buffer.allocation,
-		offset, flush_size,
-	) or_return
+	vma.FlushAllocation(device.allocator, buffer.allocation, offset, flush_size) or_return
 
 	return nil
 }
 
 buffer_destroy :: proc(buffer: ^Buffer, device: Device) {
-	if buffer == nil {
-		return
-	}
-
 	if buffer.handle != 0 {
 		vma.DestroyBuffer(device.allocator, buffer.handle, buffer.allocation)
 	}

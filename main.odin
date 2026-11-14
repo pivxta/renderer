@@ -1,41 +1,39 @@
 package main
+@(require) import "core:fmt"
 import "core:log"
 import "core:math"
-import "core:os"
-import "core:time"
 import "core:math/linalg"
 @(require) import "core:mem"
-@(require) import "core:fmt"
+import "core:os"
+import "core:time"
 
 Controls :: struct {
-	walk_forward: Key,
-	walk_backward: Key,
-	walk_right: Key,
-	walk_left: Key,
-	go_up: Key,
-	go_down: Key,
-	boost: Key,
-	zoom_amount: f32,
+	walk_forward:      Key,
+	walk_backward:     Key,
+	walk_right:        Key,
+	walk_left:         Key,
+	go_up:             Key,
+	go_down:           Key,
+	boost:             Key,
+	zoom_amount:       f32,
 	mouse_sensitivity: f32,
 }
 
 Fly_Camera :: struct {
-	position: [3]f32,
-	velocity: [3]f32,
-	yaw, pitch: f32,
-
+	position:         [3]f32,
+	velocity:         [3]f32,
+	yaw, pitch:       f32,
 	base_fov_radians: f32,
-	target_zoom: f32,
-	zoom: f32,
-
-	damp: f32,
-	boost: f32,
-	speed: f32,
-	zoom_speed: f32,
+	target_zoom:      f32,
+	zoom:             f32,
+	damp:             f32,
+	boost:            f32,
+	speed:            f32,
+	zoom_speed:       f32,
 }
 
 main :: proc() {
-	context.logger = log.create_console_logger(opt={.Level, .Terminal_Color})
+	context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
 	defer log.destroy_console_logger(context.logger)
 
 	when ODIN_DEBUG {
@@ -60,17 +58,17 @@ main :: proc() {
 		}
 	}
 
-	window, err := window_create(1280, 720, "window")
-	if err != nil {
+	window, window_err := window_create(1280, 720, "window")
+	if window_err != nil {
 		os.exit(1)
 	}
 	defer window_destroy(window)
 
-	renderer: Renderer
-	if err := renderer_init(&renderer, window); err != nil {
+	renderer, renderer_err := renderer_create(window)
+	if renderer_err != nil {
 		os.exit(1)
 	}
-	defer renderer_destroy(&renderer)
+	defer renderer_destroy(renderer)
 
 	window_set_cursor_state(window, .Disabled)
 
@@ -78,28 +76,25 @@ main :: proc() {
 	scene_init(&scene)
 	defer scene_destroy(&scene)
 
-	append(&scene.directional_lights, {
-		direction = {0.4, -1.0, 0.2},
-		color = {1.0, 1.0, 1.0},
-		illuminance = 2.0,
-	})
+	append(
+		&scene.directional_lights,
+		{direction = {0.4, -1.0, 0.2}, color = {1.0, 1.0, 1.0}, illuminance = 2.0},
+	)
 
-	append(&scene.point_lights, {
-		position = {0.0, 0.0, 0.0},
-		color = {1.0, 1.0, 0.5},
-		power = 200.0,
-		radius = 15.0,
-	})
+	append(
+		&scene.point_lights,
+		{position = {0.0, 0.0, 0.0}, color = {1.0, 1.0, 0.5}, power = 200.0, radius = 15.0},
+	)
 
 	cube := make_cube()
-	cube_mesh, cube_err := renderer_add_mesh(&renderer, cube)
+	cube_mesh, cube_err := renderer_add_mesh(renderer, cube)
 	delete_mesh(cube)
 	if cube_err != nil {
 		log.error("Failed to create cube mesh")
 	}
 
 	ball := make_sphere()
-	ball_mesh, ball_err := renderer_add_mesh(&renderer, ball)
+	ball_mesh, ball_err := renderer_add_mesh(renderer, ball)
 	delete_mesh(ball)
 	if ball_err != nil {
 		log.error("Failed to create ball mesh")
@@ -107,7 +102,7 @@ main :: proc() {
 
 	rocks_texture: Texture_Handle
 	if image, image_err := image_load_from_file("assets/rocksalbedo.jpg"); image_err == nil {
-		rocks_texture, _ = renderer_add_texture(&renderer, image)
+		rocks_texture, _ = renderer_add_texture(renderer, image)
 		image_destroy(&image)
 	} else {
 		log.errorf("Failed to load texture: %v", image_err)
@@ -115,37 +110,46 @@ main :: proc() {
 
 	rocks_normal_map: Texture_Handle
 	if image, image_err := image_load_from_file("assets/rocksnormal.jpg"); image_err == nil {
-		rocks_normal_map, _ = renderer_add_texture(&renderer, image, {colorspace = .Linear})
+		rocks_normal_map, _ = renderer_add_texture(renderer, image, {colorspace = .Linear})
 		image_destroy(&image)
 	} else {
 		log.errorf("Failed to load texture: %v", image_err)
 	}
 
-	rocks_material, _ := renderer_add_material(&renderer, Lambert_Material {
-		base_color_factor = {1.0, 1.0, 1.0, 1.0},
-		base_color_texture = rocks_texture,
-		normal_map = rocks_normal_map,
-		sampler = .Linear_Repeat,
-	})
+	rocks_material, _ := renderer_add_material(
+		renderer,
+		Lambert_Material {
+			base_color_factor = {1.0, 1.0, 1.0, 1.0},
+			base_color_texture = rocks_texture,
+			normal_map = rocks_normal_map,
+			sampler = .Linear_Repeat,
+		},
+	)
 
-	ball_material, _ := renderer_add_material(&renderer, Unlit_Material {
-		color_factor = {1.0, 1.0, 0.5},
-		sampler = .Linear_Repeat,
-	})
+	ball_material, _ := renderer_add_material(
+		renderer,
+		Unlit_Material{color_factor = {1.0, 1.0, 0.5}, sampler = .Linear_Repeat},
+	)
 
 	rows := 10
 	columns := 10
 	spacing := f32(3.0)
-	for i in 0..<rows {
-		for j in 0..<columns {
-			append(&scene.mesh_objects, {
-				transform = affine_make({
-					(f32(i) - f32(rows) * 0.5 + 0.5) * spacing, -2.0, 
-					(f32(j) - f32(columns) * 0.5 + 0.5) * spacing,
-				}),
-				mesh = cube_mesh if (i + j) % 2 == 0 else ball_mesh,
-				material = rocks_material if (i + j) % 2 == 0 else ball_material,
-			})
+	for i in 0 ..< rows {
+		for j in 0 ..< columns {
+			append(
+				&scene.mesh_objects,
+				{
+					transform = affine_make(
+						{
+							(f32(i) - f32(rows) * 0.5 + 0.5) * spacing,
+							-2.0,
+							(f32(j) - f32(columns) * 0.5 + 0.5) * spacing,
+						},
+					),
+					mesh = cube_mesh if (i + j) % 2 == 0 else ball_mesh,
+					material = rocks_material if (i + j) % 2 == 0 else ball_material,
+				},
+			)
 		}
 	}
 
@@ -164,7 +168,7 @@ main :: proc() {
 
 		if stats, ok := perf_collect_stats_after(&perf, 1.0); ok {
 			log.infof(
-				"FPS: %v, avg. frame time: %.02fms, median: %.02fms, low 1%%: %.02fms, low 0.1%%: %.02fms", 
+				"FPS: %v, avg. frame time: %.02fms, median: %.02fms, low 1%%: %.02fms, low 0.1%%: %.02fms",
 				int(stats.frames_per_second),
 				time.duration_milliseconds(stats.average_frame_time),
 				time.duration_milliseconds(stats.median_frame_time),
@@ -175,14 +179,17 @@ main :: proc() {
 
 		cursor_state := window_get_cursor_state(window)
 		if (.Just_Pressed in get_mouse_button(window, .Left) && cursor_state == .Normal) ||
-		    .Just_Pressed in get_key(window, .Escape) {
- 			#partial switch cursor_state {
-			case .Normal: cursor_state = .Disabled
-			case .Disabled: cursor_state = .Normal
-			case: cursor_state = .Disabled
+		   .Just_Pressed in get_key(window, .Escape) {
+			#partial switch cursor_state {
+			case .Normal:
+				cursor_state = .Disabled
+			case .Disabled:
+				cursor_state = .Normal
+			case:
+				cursor_state = .Disabled
 			}
 			window_set_cursor_state(window, cursor_state)
-		} 
+		}
 
 		if cursor_state == .Disabled {
 			look_around(&flycam, window, controls)
@@ -193,7 +200,7 @@ main :: proc() {
 
 		update_camera(&scene.camera, flycam)
 
-		if err := renderer_draw(&renderer, scene); err != nil {
+		if err := renderer_draw(renderer, scene); err != nil {
 			log.errorf("Renderer draw error: %v", err)
 			os.exit(1)
 		}
@@ -205,13 +212,13 @@ main :: proc() {
 
 look_around :: proc(flycam: ^Fly_Camera, window: ^Window, controls: Controls) {
 	flycam.yaw += f32(window.cursor_delta.x) * controls.mouse_sensitivity
-	flycam.pitch += f32(window.cursor_delta.y)  * controls.mouse_sensitivity
+	flycam.pitch += f32(window.cursor_delta.y) * controls.mouse_sensitivity
 	flycam.pitch = clamp(flycam.pitch, -1.56, 1.56)
 }
 
 walk_around :: proc(flycam: ^Fly_Camera, window: ^Window, controls: Controls, dt: f32) {
-	right := [3]f32 {math.cos(flycam.yaw), 0.0, -math.sin(flycam.yaw)}
-	front := [3]f32 {math.sin(flycam.yaw), 0.0, math.cos(flycam.yaw)}
+	right := [3]f32{math.cos(flycam.yaw), 0.0, -math.sin(flycam.yaw)}
+	front := [3]f32{math.sin(flycam.yaw), 0.0, math.cos(flycam.yaw)}
 
 	wish := [3]f32{0.0, 0.0, 0.0}
 	if .Pressed in get_key(window, controls.walk_forward) {
@@ -253,7 +260,12 @@ update_flycam :: proc(flycam: ^Fly_Camera, dt: f32) {
 
 update_camera :: proc(camera: ^Camera, flycam: Fly_Camera) {
 	camera.transform.translation = flycam.position
-	camera.transform.rotation = linalg.quaternion_from_euler_angles(flycam.yaw, flycam.pitch, 0.0, .YXZ)
+	camera.transform.rotation = linalg.quaternion_from_euler_angles(
+		flycam.yaw,
+		flycam.pitch,
+		0.0,
+		.YXZ,
+	)
 	switch &p in camera.projection {
 	case Orthographic_Projection:
 	case Perspective_Projection:
@@ -264,7 +276,7 @@ update_camera :: proc(camera: ^Camera, flycam: Fly_Camera) {
 }
 
 default_flycam :: proc() -> Fly_Camera {
-	return { 
+	return {
 		base_fov_radians = math.to_radians_f32(90.0),
 		zoom_speed = 10.0,
 		boost = 1.5,

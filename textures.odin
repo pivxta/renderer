@@ -1,14 +1,13 @@
 package main
-import vk "vendor:vulkan"
-import "core:slice"
 import "core:container/handle_map"
+import "core:slice"
+import vk "vendor:vulkan"
 
 Textures :: struct {
 	textures:             Bindless_Textures,
 	samplers:             Bindless_Samplers(Texture_Sampler),
 	sampler_options:      Texture_Sampler_Options,
 	reconfigure_samplers: bool,
-
 	fallbacks:            [Texture_Fallback]Bindless_Handle,
 	updates:              [dynamic]Texture_Update,
 	handle_map:           handle_map.Dynamic_Handle_Map(Texture_Slot, Texture_Handle),
@@ -24,14 +23,14 @@ Texture_Update :: struct {
 	handle: Texture_Handle,
 }
 
-@(private="file")
+@(private = "file")
 Texture_Slot :: struct {
 	handle:          Texture_Handle,
 	texture_handle:  Maybe(Bindless_Handle),
 	fallback_handle: Bindless_Handle,
 }
 
-@(private="file")
+@(private = "file")
 TEXTURE_SAMPLER_DESCS := [Texture_Sampler]Sampler_Desc {
 	.Linear_Repeat = {address_mode = .REPEAT, mag_filter = .LINEAR},
 	.Linear_Mirror = {address_mode = .MIRRORED_REPEAT, mag_filter = .LINEAR},
@@ -41,14 +40,14 @@ TEXTURE_SAMPLER_DESCS := [Texture_Sampler]Sampler_Desc {
 	.Nearest_Clamp = {address_mode = .CLAMP_TO_EDGE, mag_filter = .NEAREST},
 }
 
-@(private="file")
+@(private = "file")
 SAMPLED_USAGE :: Resource_Usage {
 	stages = {.VERTEX_SHADER, .FRAGMENT_SHADER},
 	access = {.SHADER_SAMPLED_READ},
 	layout = .SHADER_READ_ONLY_OPTIMAL,
 }
 
-@(private="file")
+@(private = "file")
 MIPGEN_USAGE :: Resource_Usage {
 	stages = {.BLIT},
 	access = {.TRANSFER_READ},
@@ -64,63 +63,81 @@ textures_init :: proc(
 	capacity: int,
 	sampler_options: Maybe(Texture_Sampler_Options) = nil,
 	allocator := context.allocator,
-) -> (err: Texture_Error) {
-	assert(textures != nil)
+) -> (
+	err: Texture_Error,
+) {
 	assert(capacity >= len(Texture_Fallback) + 1)
 
 	textures^ = {}
 	defer if err != nil {
 		textures_destroy(textures, device)
 	}
-	
+
 	sampler_options := sampler_options.? or_else default_texture_sampler_options()
 	sampler_globals := sampler_options_to_globals(sampler_options)
 	bindless_init(&textures.textures, device, capacity, allocator) or_return
 	bindless_samplers_init(
-		&textures.samplers, device, 
-		TEXTURE_SAMPLER_DESCS, sampler_globals,
+		&textures.samplers,
+		device,
+		TEXTURE_SAMPLER_DESCS,
+		sampler_globals,
 	) or_return
 
 	handle_map.dynamic_init(&textures.handle_map, allocator)
 	textures.sampler_options = sampler_options
 	textures.updates = make([dynamic]Texture_Update, allocator)
 	textures.fallbacks = create_fallbacks(
-		&textures.textures, device, 
-		mipgen_queue, upload_queue, frame_ring,
+		&textures.textures,
+		device,
+		mipgen_queue,
+		upload_queue,
+		frame_ring,
 	) or_return
 
 	return nil
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 create_fallbacks :: proc(
-	textures: ^Bindless_Textures, 
+	textures: ^Bindless_Textures,
 	device: Device,
 	mipgen_queue: ^Mipgen_Queue,
 	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
-) -> (fallbacks: [Texture_Fallback]Bindless_Handle, err: Texture_Error) {
+) -> (
+	fallbacks: [Texture_Fallback]Bindless_Handle,
+	err: Texture_Error,
+) {
 	for &fallback, fallback_type in fallbacks {
 		fallback = create_fallback(
-			textures, device, 
-			mipgen_queue, upload_queue, 
-			frame_ring, fallback_type,
+			textures,
+			device,
+			mipgen_queue,
+			upload_queue,
+			frame_ring,
+			fallback_type,
 		) or_return
 	}
 
 	return fallbacks, nil
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 create_fallback :: proc(
-	textures: ^Bindless_Textures, 
+	textures: ^Bindless_Textures,
 	device: Device,
 	mipgen_queue: ^Mipgen_Queue,
-	upload_queue: ^Upload_Queue, 
+	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	fallback: Texture_Fallback,
-) -> (handle: Bindless_Handle, err: Texture_Error) {
-	options := Texture_Options {colorspace = .Linear, mip_levels = 1}
+) -> (
+	handle: Bindless_Handle,
+	err: Texture_Error,
+) {
+	options := Texture_Options {
+		colorspace = .Linear,
+		mip_levels = 1,
+	}
 	image := create_fallback_image(fallback, context.temp_allocator)
 	texture := create_texture(device, image, options) or_return
 	texture_handle, ok := bindless_add(textures, device, texture)
@@ -129,7 +146,8 @@ create_fallback :: proc(
 		return {}, .No_Bindless_Slots_Left
 	}
 
-	if err = upload_to_texture(mipgen_queue, upload_queue, frame_ring, texture, image); err != nil {
+	if err = upload_to_texture(mipgen_queue, upload_queue, frame_ring, texture, image);
+	   err != nil {
 		bindless_remove(textures, frame_ring, texture_handle)
 		return {}, err
 	}
@@ -137,16 +155,16 @@ create_fallback :: proc(
 	return texture_handle, nil
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 create_fallback_image :: proc(
-	fallback: Texture_Fallback, 
+	fallback: Texture_Fallback,
 	allocator := context.allocator,
 ) -> Image {
 	image, err := image_make(1, 1, .Rgba_F16, allocator)
 	assert(err == nil)
 
 	pixels := slice.reinterpret([][4]f16, image.bytes)
-	fill_color := [4]f16 {}
+	fill_color := [4]f16{}
 	switch fallback {
 	case .Color_Error:
 		fill_color = {1.0, 0.0, 1.0, 1.0}
@@ -159,8 +177,8 @@ create_fallback_image :: proc(
 	case .Aorm:
 		fill_color = {1.0, 0.5, 0.0, 0.0}
 	}
-	for i in 0..<image.width {
-		for j in 0..<image.height {
+	for i in 0 ..< image.width {
+		for j in 0 ..< image.height {
 			pixels[j * image.width + i] = fill_color
 		}
 	}
@@ -168,7 +186,7 @@ create_fallback_image :: proc(
 	return image
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 sampler_options_to_globals :: proc(options: Texture_Sampler_Options) -> Sampler_Globals {
 	return {
 		min_filter = texture_filter_to_vk(options.min_filter),
@@ -181,10 +199,6 @@ sampler_options_to_globals :: proc(options: Texture_Sampler_Options) -> Sampler_
 }
 
 textures_destroy :: proc(textures: ^Textures, device: Device) {
-	if textures == nil {
-		return
-	}
-
 	handle_map.dynamic_destroy(&textures.handle_map)
 	if textures.updates != nil {
 		delete(textures.updates)
@@ -196,52 +210,56 @@ textures_destroy :: proc(textures: ^Textures, device: Device) {
 
 @(require_results)
 textures_reserve :: proc(
-	textures: ^Textures, 
+	textures: ^Textures,
 	fallback := Texture_Fallback.Color_Default,
 ) -> Texture_Handle {
-	assert(textures != nil)
-	return handle_map.add(&textures.handle_map, {
-		texture_handle = nil,
-		fallback_handle = textures.fallbacks[fallback],
-	})
+	return handle_map.add(
+		&textures.handle_map,
+		{texture_handle = nil, fallback_handle = textures.fallbacks[fallback]},
+	)
 }
 
 @(require_results)
 textures_add :: proc(
-	textures: ^Textures, 
+	textures: ^Textures,
 	device: Device,
 	mipgen_queue: ^Mipgen_Queue,
 	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	image: Image,
-	options := Texture_Options {},
+	options := Texture_Options{},
 	fallback := Texture_Fallback.Color_Error,
-) -> (handle: Texture_Handle, err: Texture_Error) {
-	assert(textures != nil)
-
+) -> (
+	handle: Texture_Handle,
+	err: Texture_Error,
+) {
 	handle = textures_reserve(textures, fallback)
 	textures_replace(
-		textures, device, 
-		mipgen_queue, upload_queue, frame_ring, 
-		handle, image, options, update = false,
+		textures,
+		device,
+		mipgen_queue,
+		upload_queue,
+		frame_ring,
+		handle,
+		image,
+		options,
+		update = false,
 	) or_return
 
 	return handle, nil
 }
 
 textures_replace :: proc(
-	textures: ^Textures, 
+	textures: ^Textures,
 	device: Device,
 	mipgen_queue: ^Mipgen_Queue,
 	upload_queue: ^Upload_Queue,
 	frame_ring: Frame_Ring,
 	handle: Texture_Handle,
 	image: Image,
-	options := Texture_Options {},
+	options := Texture_Options{},
 	update := true,
 ) -> Texture_Error {
-	assert(textures != nil)
-
 	slot, slot_ok := handle_map.get(&textures.handle_map, handle)
 	if !slot_ok {
 		return .Invalid_Handle
@@ -254,10 +272,8 @@ textures_replace :: proc(
 		return .No_Bindless_Slots_Left
 	}
 
-	if err := upload_to_texture(
-		mipgen_queue, upload_queue, 
-		frame_ring, new_texture, image,
-	); err != nil {
+	if err := upload_to_texture(mipgen_queue, upload_queue, frame_ring, new_texture, image);
+	   err != nil {
 		bindless_remove(&textures.textures, frame_ring, new_texture_handle)
 		return err
 	}
@@ -267,24 +283,25 @@ textures_replace :: proc(
 	}
 
 	if update {
-		append(&textures.updates, {
-			kind = .Replace,
-			handle = handle,
-		})
+		append(&textures.updates, {kind = .Replace, handle = handle})
 	}
-	
+
 	slot.texture_handle = new_texture_handle
 	return nil
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 create_texture :: proc(
 	device: Device,
 	image: Image,
 	options: Texture_Options,
-) -> (texture: Texture, err: Texture_Error) {
+) -> (
+	texture: Texture,
+	err: Texture_Error,
+) {
 	texture_init(
-		&texture, device,
+		&texture,
+		device,
 		type = .D2,
 		usage = {.TRANSFER_DST, .TRANSFER_SRC, .SAMPLED},
 		format = image_format_to_vk(image.format, options.colorspace),
@@ -295,11 +312,11 @@ create_texture :: proc(
 	return texture, nil
 }
 
-@(private="file", require_results)
+@(private = "file", require_results)
 upload_to_texture :: proc(
 	mipgen_queue: ^Mipgen_Queue,
-	upload_queue: ^Upload_Queue, 
-	frame_ring: Frame_Ring, 
+	upload_queue: ^Upload_Queue,
+	frame_ring: Frame_Ring,
 	texture: Texture,
 	image: Image,
 ) -> Texture_Error {
@@ -313,15 +330,10 @@ upload_to_texture :: proc(
 }
 
 textures_remove :: proc(textures: ^Textures, frame_ring: Frame_Ring, handle: Texture_Handle) {
-	assert(textures != nil)
-
 	if slot, slot_ok := handle_map.get(&textures.handle_map, handle); slot_ok {
 		if texture_handle, texture_handle_ok := slot.texture_handle.?; texture_handle_ok {
 			bindless_remove(&textures.textures, frame_ring, texture_handle)
-			append(&textures.updates, {
-				kind = .Remove,
-				handle = handle,
-			})
+			append(&textures.updates, {kind = .Remove, handle = handle})
 		}
 		handle_map.remove(&textures.handle_map, handle)
 	}
@@ -329,7 +341,7 @@ textures_remove :: proc(textures: ^Textures, frame_ring: Frame_Ring, handle: Tex
 
 @(require_results)
 textures_take_updates :: proc(
-	textures: ^Textures, 
+	textures: ^Textures,
 	allocator := context.allocator,
 ) -> [dynamic]Texture_Update {
 	updated := slice.clone_to_dynamic(textures.updates[:], allocator)
@@ -339,18 +351,18 @@ textures_take_updates :: proc(
 
 @(require_results)
 textures_is_valid :: proc(textures: ^Textures, handle: Texture_Handle) -> bool {
-	assert(textures != nil)
 	return handle_map.is_valid(&textures.handle_map, handle)
 }
 
 @(require_results)
 textures_get_index :: proc(
-	textures: ^Textures, 
-	handle: Texture_Handle, 
+	textures: ^Textures,
+	handle: Texture_Handle,
 	fallback := Texture_Fallback.Color_Error,
-) -> (Texture_Index, bool) #optional_ok {
-	assert(textures != nil)
-	
+) -> (
+	Texture_Index,
+	bool,
+) #optional_ok {
 	if slot, slot_ok := handle_map.get(&textures.handle_map, handle); slot_ok {
 		if texture_handle, texture_handle_ok := slot.texture_handle.?; texture_handle_ok {
 			return Texture_Index(texture_handle.idx), true
@@ -364,7 +376,7 @@ textures_get_index :: proc(
 
 @(require_results)
 textures_get_fallback_index :: proc(
-	textures: ^Textures, 
+	textures: ^Textures,
 	fallback: Texture_Fallback,
 ) -> Texture_Index {
 	return Texture_Index(textures.fallbacks[fallback].idx)
@@ -391,18 +403,15 @@ textures_get_sampler_set_layout :: proc(textures: Textures) -> vk.DescriptorSetL
 }
 
 textures_destroy_pending :: proc(textures: ^Textures, device: Device, finished_value: u64) {
-	assert(textures != nil)
 	bindless_destroy_pending(&textures.textures, device, finished_value)
 }
 
 textures_set_sampler_options :: proc(textures: ^Textures, options: Texture_Sampler_Options) {
-	assert(textures != nil)
 	textures.sampler_options = options
 	textures.reconfigure_samplers = true
 }
 
 textures_reconfigure_dirty_samplers :: proc(textures: ^Textures, device: Device) -> vk.Result {
-	assert(textures != nil)
 	if textures.reconfigure_samplers {
 		sampler_globals := sampler_options_to_globals(textures.sampler_options)
 		bindless_samplers_configure(&textures.samplers, device, sampler_globals) or_return

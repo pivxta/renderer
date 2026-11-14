@@ -1,4 +1,4 @@
-package main 
+package main
 import "base:runtime"
 import "core:log"
 import "vendor:glfw"
@@ -9,8 +9,8 @@ ENABLE_SYNC_VALIDATION :: #config(ENABLE_SYNC_VALIDATION, ODIN_DEBUG)
 VALIDATION_LAYER_NAME :: "VK_LAYER_KHRONOS_validation"
 
 Instance :: struct {
-	handle: vk.Instance,
-	debug_messenger: vk.DebugUtilsMessengerEXT,
+	handle:            vk.Instance,
+	debug_messenger:   vk.DebugUtilsMessengerEXT,
 	messenger_context: ^runtime.Context,
 }
 
@@ -25,10 +25,9 @@ Instance_Error :: union #shared_nil {
 }
 
 @(require_results)
-instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
-	assert(instance != nil)
-
+instance_init :: proc(instance: ^Instance) -> (err: Instance_Error) {
 	instance^ = {}
+
 	defer if err != nil {
 		instance_destroy(instance)
 	}
@@ -36,10 +35,10 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
 
 	app_info := vk.ApplicationInfo {
-		sType = .APPLICATION_INFO,
+		sType              = .APPLICATION_INFO,
 		applicationVersion = vk.MAKE_VERSION(1, 0, 0),
-		engineVersion = vk.MAKE_VERSION(1, 0, 0),
-		apiVersion = vk.API_VERSION_1_3,
+		engineVersion      = vk.MAKE_VERSION(1, 0, 0),
+		apiVersion         = vk.API_VERSION_1_3,
 	}
 
 	// Instance extensions
@@ -58,7 +57,7 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 			return Instance_Init_Error.Required_Extension_Not_Available
 		}
 	}
-	
+
 	// Probe for the debug utils extension
 	debug_utils_enabled := false
 	if check_extension(extension_props, vk.EXT_DEBUG_UTILS_EXTENSION_NAME) {
@@ -66,16 +65,20 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 		append(&extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
 		debug_utils_enabled = true
 	}
-	
+
 	// Instance layers
-	layers := make([dynamic]cstring, 0, allocator=context.temp_allocator)
+	layers := make([dynamic]cstring, 0, allocator = context.temp_allocator)
 	layer_settings_enabled := false
 
 	when ENABLE_VALIDATION {
 		// Probe for validation layer
-		layer_prop_count: u32 
+		layer_prop_count: u32
 		vk.EnumerateInstanceLayerProperties(&layer_prop_count, nil) or_return
-		layer_props := make([]vk.LayerProperties, layer_prop_count, allocator=context.temp_allocator)
+		layer_props := make(
+			[]vk.LayerProperties,
+			layer_prop_count,
+			allocator = context.temp_allocator,
+		)
 		vk.EnumerateInstanceLayerProperties(&layer_prop_count, raw_data(layer_props)) or_return
 
 		validation_enabled := false
@@ -86,11 +89,13 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 				validation_enabled = true
 			}
 		}
-		
+
 		if validation_enabled {
 			// Probe for layer settings extension
-			layer_extension_props := enumerate_extensions(VALIDATION_LAYER_NAME, 
-			                                              context.temp_allocator) or_return
+			layer_extension_props := enumerate_extensions(
+				VALIDATION_LAYER_NAME,
+				context.temp_allocator,
+			) or_return
 
 			if check_extension(layer_extension_props, vk.EXT_LAYER_SETTINGS_EXTENSION_NAME) {
 				log.debugf("Enabled Vulkan extension '%v'", vk.EXT_LAYER_SETTINGS_EXTENSION_NAME)
@@ -101,15 +106,15 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 			log.warnf("Validation layer requested but %v is not installed", VALIDATION_LAYER_NAME)
 		}
 	}
-	
+
 	// Instance creation
 	instance_info := vk.InstanceCreateInfo {
-		sType = .INSTANCE_CREATE_INFO,
-		pApplicationInfo = &app_info,
-		enabledExtensionCount = u32(len(extensions)),
+		sType                   = .INSTANCE_CREATE_INFO,
+		pApplicationInfo        = &app_info,
+		enabledExtensionCount   = u32(len(extensions)),
 		ppEnabledExtensionNames = raw_data(extensions),
-		enabledLayerCount = u32(len(layers)),
-		ppEnabledLayerNames = raw_data(layers),
+		enabledLayerCount       = u32(len(layers)),
+		ppEnabledLayerNames     = raw_data(layers),
 	}
 
 	layer_settings_info: vk.LayerSettingsCreateInfoEXT
@@ -125,10 +130,10 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 	}
 	if layer_settings_enabled {
 		layer_settings_info = {
-			sType = .LAYER_SETTINGS_CREATE_INFO_EXT,
-			pNext = instance_info.pNext,
+			sType        = .LAYER_SETTINGS_CREATE_INFO_EXT,
+			pNext        = instance_info.pNext,
 			settingCount = u32(len(validation_layer_settings)),
-			pSettings = raw_data(validation_layer_settings[:]),
+			pSettings    = raw_data(validation_layer_settings[:]),
 		}
 
 		instance_info.pNext = &layer_settings_info
@@ -146,18 +151,18 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 
 		messenger_context := new_clone(runtime.default_context())
 		messenger_context.logger = log.create_console_logger(
-			lowest=context.logger.lowest_level,
-			opt=context.logger.options & {.Level, .Date, .Time, .Terminal_Color},
-			ident="Vulkan",
+			lowest = context.logger.lowest_level,
+			opt = context.logger.options & {.Level, .Date, .Time, .Terminal_Color},
+			ident = "Vulkan",
 		)
 
 		debug_messenger_info = {
-			sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-			pNext = instance_info.pNext,
+			sType           = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+			pNext           = instance_info.pNext,
 			messageSeverity = severity,
-			messageType = {.GENERAL, .VALIDATION, .PERFORMANCE},
+			messageType     = {.GENERAL, .VALIDATION, .PERFORMANCE},
 			pfnUserCallback = messenger_callback,
-			pUserData = messenger_context,
+			pUserData       = messenger_context,
 		}
 
 		instance.messenger_context = messenger_context
@@ -169,8 +174,9 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 
 	if debug_utils_enabled {
 		vk.CreateDebugUtilsMessengerEXT(
-			instance.handle, 
-			&debug_messenger_info, nil, 
+			instance.handle,
+			&debug_messenger_info,
+			nil,
 			&instance.debug_messenger,
 		) or_return
 	}
@@ -178,12 +184,15 @@ instance_init :: proc (instance: ^Instance) -> (err: Instance_Error) {
 	return nil
 }
 
-@(private="file")
+@(private = "file")
 enumerate_extensions :: proc(
-	layer: cstring, 
+	layer: cstring,
 	allocator: runtime.Allocator,
-) -> (props: []vk.ExtensionProperties, result: vk.Result) {
-	count: u32 
+) -> (
+	props: []vk.ExtensionProperties,
+	result: vk.Result,
+) {
+	count: u32
 	vk.EnumerateInstanceExtensionProperties(layer, &count, nil) or_return
 
 	props = make([]vk.ExtensionProperties, count, allocator)
@@ -195,7 +204,7 @@ enumerate_extensions :: proc(
 	return props, .SUCCESS
 }
 
-@(private="file")
+@(private = "file")
 check_extension :: proc(props: []vk.ExtensionProperties, extension: cstring) -> bool {
 	for &p in props {
 		current_extension_name := cstring(raw_data(p.extensionName[:]))
@@ -207,10 +216,6 @@ check_extension :: proc(props: []vk.ExtensionProperties, extension: cstring) -> 
 }
 
 instance_destroy :: proc(i: ^Instance) {
-	if i == nil {
-		return
-	}
-
 	if i.handle != nil && i.debug_messenger != 0 {
 		vk.DestroyDebugUtilsMessengerEXT(i.handle, i.debug_messenger, nil)
 	}
@@ -224,7 +229,7 @@ instance_destroy :: proc(i: ^Instance) {
 	i^ = {}
 }
 
-@(private="file")
+@(private = "file")
 messenger_callback :: proc "system" (
 	severity: vk.DebugUtilsMessageSeverityFlagsEXT,
 	types: vk.DebugUtilsMessageTypeFlagsEXT,
@@ -236,7 +241,7 @@ messenger_callback :: proc "system" (
 	}
 
 	context = (cast(^runtime.Context)user_data)^
-	
+
 	level: log.Level
 	if .ERROR in severity {
 		level = .Error
@@ -251,4 +256,3 @@ messenger_callback :: proc "system" (
 	log.logf(level, "%s", callback_data.pMessage)
 	return false
 }
-
